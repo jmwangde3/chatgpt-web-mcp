@@ -1,0 +1,34 @@
+{
+  "canonical_edit_source": "Skills Manager central library",
+  "distribution_target": [
+    "codex"
+  ],
+  "duplicate_entry_created": false,
+  "files": [
+    {
+      "file": "codex-chatgpt-review-github/SKILL.md",
+      "sha256": "2e30efff2882f6f8bba2d49e9848d2aed99c2914dc93546a870b59c4c8ff59fc",
+      "export_matches_center": true
+    },
+    {
+      "file": "codex-chatgpt-review-github/references/github-review-workflow.md",
+      "sha256": "d015c43b6039a7eaeef4cce413454e67c8e5e00e8e03f166286447f4f4f512a8",
+      "export_matches_center": true
+    },
+    {
+      "file": "codex-chatgpt-review-github/references/code-review-protocol.md",
+      "sha256": "2e654fd22755e0e8147f0a59d33ab3194a8b9d54ea242e8dc3b3a89e64291cd3",
+      "export_matches_center": true
+    },
+    {
+      "file": "codex-chatgpt-review-local/SKILL.md",
+      "sha256": "35138a5a9d1f06d7429abd71e059b8e7f4c8b372d83acc14da440cecc24e9814",
+      "export_matches_center": true
+    },
+    {
+      "file": "codex-chatgpt-review-local/references/local-review-workflow.md",
+      "sha256": "c3f3f11e4c647dd0a7daf9085ee81569295d7a3749b79205d3869f64b4ee88cf",
+      "export_matches_center": true
+    }
+  ]
+}
