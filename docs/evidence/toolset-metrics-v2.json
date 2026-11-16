@@ -1,0 +1,24 @@
+{
+  "full": {
+    "count": 63,
+    "schemaBytes": 34147,
+    "schemaChars": 30351,
+    "inputSchemaBytes": 19865,
+    "inputSchemaChars": 19023,
+    "tokenEstimate": 7588,
+    "tokenEstimateMethod": "characters/4; heuristic, not billed tokens",
+    "instructionsChars": 1176,
+    "artifacts": []
+  },
+  "unified": {
+    "count": 17,
+    "schemaBytes": 12057,
+    "schemaChars": 12055,
+    "inputSchemaBytes": 7399,
+    "inputSchemaChars": 7399,
+    "tokenEstimate": 3014,
+    "tokenEstimateMethod": "characters/4; heuristic, not billed tokens",
+    "instructionsChars": 833,
+    "artifacts": []
+  }
+}
