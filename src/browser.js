@@ -675,11 +675,11 @@ async function waitForSiteAction(action, signal) {
   }
   if (initial.activeGeneration?.active) {
     throw new ChatGPTWebError(
-      "当前 ChatGPT 页面仍有一条生成任务或尚未确认完成的回答。为避免并发请求，已拒绝新的网页操作。",
+      "生成任务仍在进行或本地尚未确认上次回答完成，已拒绝新的网页操作；有任务编号时请用 chat_result 读取原任务。",
       {
         activeGeneration: initial.activeGeneration,
         action,
-        nextStep: "只调用 chatgpt_get_latest_response 检查一次；不要重新发送。",
+        nextStep: "有任务编号时用 chat_result 读取原任务；旧版未管理会话用 chatgpt_get_latest_response。不要重新发送。",
       },
     );
   }
@@ -1040,11 +1040,11 @@ export class ChatGPTBrowser {
     }
     if (state.activeGeneration?.active) {
       throw new ChatGPTWebError(
-        "当前页面仍有一条生成任务或尚未确认完成的回答，已拒绝新的网页操作。",
+        "生成任务仍在进行或本地尚未确认上次回答完成，已拒绝新的网页操作；有任务编号时请用 chat_result 读取原任务。",
         {
           activeGeneration: state.activeGeneration,
           action,
-          nextStep: "只调用 chatgpt_get_latest_response 检查一次；不要重新发送。",
+          nextStep: "有任务编号时用 chat_result 读取原任务；旧版未管理会话用 chatgpt_get_latest_response。不要重新发送。",
         },
       );
     }

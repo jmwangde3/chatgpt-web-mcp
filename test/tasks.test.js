@@ -48,7 +48,7 @@ test('a stalled result read unwinds before releasing its journal and recovers wi
   f.adapter.inspect = () => controlRequest(new Promise(resolve => { late = resolve; }), { signal, timeout: 10000 });
   f.adapter.settle = async () => { settles++; };
   const result = await f.kernel.result(task.task_id, { wait: true, timeoutMs: 1000 });
-  assert.equal(result.timed_out, true); assert.equal(result.state, 'uncertain');
+  assert.equal(result.timed_out, true); assert.equal(result.state, 'submitted'); assert.equal(result.recovery.action, 'chat_result');
   late({ ...f.page, busy: false, complete: true, responseCount: 1, text: 'late answer' });
   await new Promise(setImmediate);
   assert.equal(settles, 0); assert.equal(f.sends(), 1);
@@ -56,6 +56,107 @@ test('a stalled result read unwinds before releasing its journal and recovers wi
   f.adapter.inspect = async () => ({ ...f.page, busy: false, complete: true, responseCount: 1, text: 'verified answer' });
   assert.equal((await f.kernel.result(task.task_id)).state, 'completed');
   assert.equal(f.sends(), 1);
+});
+
+test('repeated observation timeouts preserve running task and complete without resending', async t => {
+  const f = await fixture(t); const task = await f.kernel.send(f.input);
+  assert.equal((await f.kernel.read(task.task_id)).state, 'running');
+  let signal;
+  f.adapter.browser.runExclusive = async (fn, options) => { signal = options.signal; return fn(); };
+  f.adapter.inspect = () => controlRequest(new Promise(() => {}), {signal, timeout:10000});
+  for (let i=0; i<2; i++) {
+    const result = await f.kernel.result(task.task_id, {wait:true, timeoutMs:1000});
+    assert.equal(result.state, 'running'); assert.equal(result.timed_out, true); assert.equal(result.recovery.action, 'chat_result');
+  }
+  Object.assign(f.page, {responseCount:1, busy:false, complete:true, text:'done'});
+  f.adapter.inspect = async () => ({...f.page});
+  assert.equal((await f.kernel.result(task.task_id)).state, 'completed'); assert.equal(f.sends(), 1);
+});
+
+test('budget timeout then CONTROL_BUSY resumes same task and settles only on completion', async t => {
+  const f = await fixture(t); const task = await f.kernel.send(f.input); let signal, settles = 0;
+  f.adapter.browser.runExclusive = async (fn, options) => {signal=options.signal; return fn();};
+  f.adapter.inspect = () => controlRequest(new Promise(() => {}), {signal, timeout:10000});
+  f.adapter.settle = async () => {settles++;};
+  const timed = await f.kernel.result(task.task_id, {wait:true, timeoutMs:1000});
+  assert.equal(timed.state, 'submitted'); assert.equal(timed.timed_out, true); assert.equal(settles, 0);
+  f.adapter.inspect = async () => { throw Object.assign(new Error('closing'), {code:'CONTROL_BUSY'}); };
+  const busy = await f.kernel.result(task.task_id);
+  assert.equal(busy.task_id, task.task_id); assert.equal(busy.state, 'uncertain'); assert.equal(busy.error.code, 'CONTROL_BUSY');
+  assert.equal(busy.recovery.action, 'chat_result'); assert.equal(busy.recovery.retry_after_ms, 5000); assert.equal(settles, 0);
+  Object.assign(f.page, {responseCount:1, busy:false, complete:true, text:'done'});
+  f.adapter.inspect = async () => ({...f.page});
+  const completed = await f.kernel.result(task.task_id);
+  assert.equal(completed.task_id, task.task_id); assert.equal(completed.state, 'completed'); assert.equal(settles, 1); assert.equal(f.sends(), 1);
+});
+
+test('observation timeout preserves a prior unconfirmed send and its recovery', async t => {
+  const f = await fixture(t); const task = await f.kernel.send(f.input);
+  await f.kernel.locked('gemini', async (state, save) => { Object.assign(state.tasks[task.task_id], {state:'uncertain', error:{code:'SEND_UNCONFIRMED', message:'unconfirmed'}}); await save(); });
+  let signal; f.adapter.browser.runExclusive = async (fn, options) => {signal=options.signal; return fn();};
+  f.adapter.inspect = () => controlRequest(new Promise(() => {}), {signal, timeout:10000});
+  const result = await f.kernel.result(task.task_id, {wait:true, timeoutMs:1000});
+  assert.equal(result.state, 'uncertain'); assert.equal(result.error.code, 'SEND_UNCONFIRMED'); assert.equal(result.recovery.action, 'inspect_page'); assert.equal(result.timed_out, true); assert.equal(f.sends(), 1);
+  f.adapter.inspect = async () => { throw Object.assign(new Error('closing'), {code:'CONTROL_BUSY'}); };
+  const busy = await f.kernel.result(task.task_id);
+  assert.equal(busy.state, 'uncertain'); assert.equal(busy.error.code, 'SEND_UNCONFIRMED'); assert.equal(busy.recovery.action, 'inspect_page');
+});
+
+test('legacy RESULT_TIMEOUT recommends reading the original task without rewriting it', async t => {
+  const f = await fixture(t); const task = await f.kernel.send(f.input);
+  await f.kernel.locked('gemini', async (state, save) => { Object.assign(state.tasks[task.task_id], {state:'uncertain', error:{code:'RESULT_TIMEOUT', message:'old timeout'}}); await save(); });
+  const stored = await readState(f.journal);
+  const replay = await f.kernel.send(f.input);
+  assert.equal(replay.recovery.action, 'chat_result'); assert.equal(replay.error.code, 'RESULT_TIMEOUT');
+  assert.deepEqual(await readState(f.journal), stored);
+});
+
+test('actual errors at budget expiry are not mistaken for timeout', async t => {
+  for (const code of ['LOGIN_REQUIRED', 'RATE_LIMITED', 'CONVERSATION_CHANGED', 'SEND_UNCONFIRMED']) {
+    const f = await fixture(t); const task = await f.kernel.send(f.input); let signal;
+    f.adapter.browser.runExclusive = async (fn, options) => {signal=options.signal; return fn();};
+    f.adapter.inspect = () => new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(Object.assign(new Error(code), {code})), {once:true}));
+    const result = await f.kernel.result(task.task_id, {wait:true, timeoutMs:1000});
+    assert.equal(result.state, 'uncertain'); assert.equal(result.error.code, code); assert.notEqual(result.recovery.action, 'chat_result'); assert.equal(f.sends(), 1);
+  }
+});
+
+test('outer result does not hide a real exception racing with its budget', async t => {
+  const f = await fixture(t); const task = await f.kernel.send(f.input);
+  f.kernel.read = async (id, {signal}) => new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(Object.assign(new Error('real failure'), {code:'REAL_FAILURE', cause:signal.reason})), {once:true}));
+  await assert.rejects(f.kernel.result(task.task_id, {wait:true, timeoutMs:1000}), {code:'REAL_FAILURE'});
+  assert.equal(f.sends(), 1);
+});
+
+test('timeout after settlement starts remains uncertain and is not classified as pure observation', async t => {
+  const f = await fixture(t); const task = await f.kernel.send(f.input); let signal;
+  Object.assign(f.page, {responseCount:1, busy:false, complete:true, text:'answer'});
+  f.adapter.browser.runExclusive = async (fn, options) => {signal=options.signal; return fn();};
+  f.adapter.settle = () => controlRequest(new Promise(() => {}), {signal, timeout:10000});
+  const result = await f.kernel.result(task.task_id, {wait:true, timeoutMs:1000});
+  assert.equal(result.state, 'uncertain'); assert.equal(result.error.code, 'RESULT_OBSERVATION_INTERRUPTED'); assert.equal(result.recovery.action, 'inspect_page'); assert.equal(f.sends(), 1);
+});
+
+test('refresh timeout preserves uncertain revalidation and previous response', async t => {
+  const f = await fixture(t); const task = await f.kernel.send(f.input);
+  Object.assign(f.page, {responseCount:1, busy:false, complete:true, text:'original'});
+  assert.equal((await f.kernel.result(task.task_id)).state, 'completed');
+  let signal; f.adapter.browser.runExclusive = async (fn, options) => {signal=options.signal; return fn();};
+  f.adapter.inspect = () => controlRequest(new Promise(() => {}), {signal, timeout:10000});
+  const result = await f.kernel.result(task.task_id, {refresh:true, wait:true, timeoutMs:1000});
+  assert.equal(result.state, 'uncertain'); assert.equal(result.error.code, 'RESULT_OBSERVATION_INTERRUPTED');
+  assert.equal(result.previous_response.text, 'original'); assert.equal(result.recovery.action, 'inspect_page');
+});
+
+test('cancel timeout cannot be treated as harmless observation', async t => {
+  const f = await fixture(t); const task = await f.kernel.send(f.input); let signal;
+  const reason = Object.assign(new Error('budget expired'), {code:'RESULT_TIMEOUT'}), controller = new AbortController();
+  f.adapter.browser.runExclusive = async (fn, options) => {signal=options.signal; return fn();};
+  f.adapter.cancel = () => controlRequest(new Promise(() => {}), {signal, timeout:10000});
+  const pending = f.kernel.read(task.task_id, {cancel:true, signal:controller.signal, budgetReason:reason});
+  setTimeout(() => controller.abort(reason), 30);
+  const result = await pending;
+  assert.equal(result.state, 'uncertain'); assert.equal(result.error.code, 'CANCEL_UNCONFIRMED'); assert.equal(result.recovery.action, 'inspect_page');
 });
 
 for (const id of ['chatgpt', 'gemini']) {
