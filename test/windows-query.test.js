@@ -5,6 +5,61 @@ import {PassThrough} from 'node:stream';
 import {windowsQuery,verifyWindowsProcess} from '../src/shared/windows-security.js';
 const expected={pid:123,port:9222,profile:'C:\\private profile',executable:'C:\\Chrome\\chrome.exe'};
 const actual={...expected,creationTime:'2026-11-17T00:00:00Z',ownerPid:123,address:'127.0.0.1',commandLine:'chrome.exe "--user-data-dir=C:\\private profile" --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1'};
+
+function launchChildFixture(delta = 1000) {
+ const startedAt = Date.parse('2026-11-17T00:00:00.000Z');
+ return {
+  saved: {...expected, pid:46428, startedAt},
+  listener: {...actual, pid:51184, ownerPid:51184, parentPid:46428,
+   creationTime:new Date(startedAt + delta).toISOString()},
+ };
+}
+
+for (const delta of [-1000, 1000, 10000]) {
+ test(`verified direct launch child migrates to listener PID at creation delta ${delta}ms`, async () => {
+  const {saved, listener} = launchChildFixture(delta);
+  let queries = 0;
+  const identity = await verifyWindowsProcess(saved, {query:async (_script, input) => {
+   queries++;
+   assert.deepEqual(input, {pid:saved.pid, port:saved.port});
+   return {...listener};
+  }});
+  assert.equal(queries, 1);
+  assert.deepEqual(identity, {
+   pid:listener.pid, port:listener.port, profile:saved.profile,
+   executable:saved.executable, creationTime:listener.creationTime,
+  });
+  assert.equal(saved.pid, 46428, 'verification must not mutate the saved record');
+  assert.equal(identity.commandLine, undefined);
+ });
+}
+
+for (const [label, change] of [
+ ['wrong parent', ({listener}) => {listener.parentPid = 999;}],
+ ['created too early', ({saved, listener}) => {listener.creationTime = new Date(saved.startedAt - 1001).toISOString();}],
+ ['created too late', ({saved, listener}) => {listener.creationTime = new Date(saved.startedAt + 10001).toISOString();}],
+ ['missing startedAt', ({saved}) => {delete saved.startedAt;}],
+ ['already enriched creationTime', ({saved, listener}) => {saved.creationTime = listener.creationTime;}],
+ ['wrong executable', ({listener}) => {listener.executable = 'C:\\Other\\chrome.exe';}],
+ ['wrong profile', ({listener}) => {listener.commandLine = listener.commandLine.replace('private profile', 'other profile');}],
+ ['non-loopback listener', ({listener}) => {listener.address = '0.0.0.0';}],
+ ['non-loopback command-line address', ({listener}) => {listener.commandLine = listener.commandLine.replace('127.0.0.1', '0.0.0.0');}],
+ ['wrong listener owner', ({listener}) => {listener.ownerPid = 999;}],
+ ['wrong listener port', ({listener}) => {listener.port = 9333;}],
+ ['wrong command-line port', ({listener}) => {listener.commandLine = listener.commandLine.replace('9222', '9333');}],
+]) {
+ test(`launch-child migration rejects ${label}`, async () => {
+  const pair = launchChildFixture();
+  change(pair);
+  let queries = 0;
+  await assert.rejects(verifyWindowsProcess(pair.saved, {query:async () => {
+   queries++;
+   return {...pair.listener};
+  }}), {code:'BROWSER_IDENTITY_MISMATCH'});
+  assert.equal(queries, 1);
+  assert.equal(pair.saved.pid, 46428);
+ });
+}
 test('legacy identity is upgraded only after live verification and omits command line',async()=>{
  const identity=await verifyWindowsProcess(expected,{query:async()=>actual});
  assert.equal(identity.creationTime,actual.creationTime);assert.equal(identity.commandLine,undefined);

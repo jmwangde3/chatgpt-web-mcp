@@ -28,7 +28,7 @@ test('controller timeout and disconnect preserve the dedicated browser, tab and 
     await runtime.terminate();
     await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
-  const context = await runtime.connect();
+  const context = await runtime.connect(null);
   const page = context.pages()[0];
   await page.setContent('<textarea>preserved draft</textarea>');
   const id = await targetId(context, page);

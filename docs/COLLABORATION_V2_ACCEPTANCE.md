@@ -62,13 +62,13 @@ These are serialized definition measurements, not Codex billed-token measurement
 - 旧安装记录曾引用V1草稿，中心源更新后 `skills check` 报 update_available。逐文件核实 GitHub 快照与中心源文本一致后，经 Skills Manager `set-source` 迁移至本审查分支，保留原技能ID、标签与部署。两项现均 `up_to_date`。中心源仍为日常唯一编辑位置；源码跟踪分支为本审查分支，合并后应按实际维护策略迁移到主分支。
 - 全局 MCP 连接仍保持原 full 模式，未部署新服务代码，未改模型路由或现有浏览器实现。
 
-## B7 场景验收账本
+## B7 场景验收账本（实时审查进行中）
 
 以下严格区分规则已交付、Codex侧测试与真实网页端到端测试。没有网页独立实读证据的场景不能算PASS。
 
 | 编号 | 场景 | 当前证据 / 状态 |
 |---|---|---|
-|G01|公开仓库独立读取|待网页登录后实测，未验证|
+|G01|公开仓库独立读取|实际请求已提交，等待独立实读证据|
 |G02|私有仓库已有授权|没有可核实的网页授权证据，未验证|
 |G03|私有仓库无授权自动回退|规则已写入，真实权限场景未验证|
 |G04|无remote回退Local|规则已写入；本地无Git证据采集成功，独立Agent路由未验证|
@@ -94,7 +94,7 @@ These are serialized definition measurements, not Codex billed-token measurement
 
 自动选择和手动覆盖的规则已交付；不得把阅读这些规则当成上述场景的行为测试。
 
-### 当前真实网页登录阻塞
+### 曾出现的网页登录误报与当前修复
 
 现有 MCP `chat_status`（本任务独立session）返回“专用浏览器尚未登录”；没有提交任何新的审查消息，因此没有新task_id可恢复。用户要求打开浏览器后，已使用现有项目登录入口打开专用登录窗口，等待手动认证。没有读取Cookie/凭据、接管日常Chrome、关闭其他浏览器或清理13项旧uncertain任务。此前V1失败请求没有重复发送。
 
@@ -108,7 +108,7 @@ These are serialized definition measurements, not Codex billed-token measurement
 ## 当前总判定与审核范围
 
 - **WORK PACKAGE A: PASS（工程离线验收）**。A1–A3 在 `8c8a7c7` 的 [CI43908050033](https://github.com/jmwangde3/chatgpt-web-mcp/actions/runs/43908050033) 四任务全绿；完整 A1–A4 代码 `fe93eb9` 的 [CI43910588482](https://github.com/jmwangde3/chatgpt-web-mcp/actions/runs/43910588482) 也四任务全绿。本地最终单元206/206、发送专项19/19、Windows安全专项5/5，full/unified smoke通过，pack dry-run通过，diff check通过。没有声称已在真实账号部署新代码。
-- **WORK PACKAGE B: CONDITIONAL**。两项Skill中心源、单份协议、分发与静态验收通过；登录完成前，GitHub独立实读、私有仓库权限、真实双轮复审、任务恢复及23场景行为验收仍不完整。不得作为完整端到端PASS。
+- **WORK PACKAGE B: CONDITIONAL**。两项Skill中心源、单份协议、分发与静态验收通过；真实复审完成前，GitHub独立实读、私有仓库权限、真实双轮复审、任务恢复及23场景行为验收仍不完整。不得作为完整端到端PASS。
 - **OVERALL: CONDITIONAL**。代码可交审；正式稳定使用的完整验收仍依赖后续真实网页证据。
 
 ### 审核文件与影响
@@ -125,8 +125,19 @@ These are serialized definition measurements, not Codex billed-token measurement
 
 ### 后续必要事项
 
-1. 在现有MCP专用窗口完成手动登录，再按原独立会话继续，不清理其他任务、不读取凭据。
+1. 当前已确认账号登录，继续本任务独立会话的真实复审；不再要求重复登录，不清理其他任务或读取凭据。
 2. 用无敏感专用测试仓库执行GitHub固定SHA双轮审查；私库分别核实网页授权，不以Codex授权替代。
 3. 对同一合成任务完成Local两轮、真实观察超时后的同task_id恢复，以及完整路由场景。
 4. 记录真实请求字符数、文件读取次数、轮数/时间；无法获得精确Token时继续标明估算或N/A。
 5. 本审查分支合并后，按维护策略迁移Skills Manager远端跟踪分支；中心源仍是唯一编辑位置。
+
+## 实机发现的启动父子PID问题（后续修正）
+
+用户指出可见页面已经登录。原登录辅助进程在启动时还遇到 `AbortSignal=null` 错误；同时Chrome实际监听进程为启动PID的直接子进程，保存的父PID已经退出。专用Profile和账号会话没有丢失。不能把接管失败直接解释成账号需要重新登录。
+
+- `PersistentBrowser.connect` 现将空signal归一为undefined，并允许Windows已验证启动链在父进程正常退出后有界等待实际监听进程。
+- 只有尚未补充创建时间的启动记录、实际进程是记录PID的直接子进程、创建时间落在启动记录的紧密窗口内，才允许迁移；可执行文件/Profile/端口/loopback检查仍全部保留。已验证创建时间的记录不能任意迁移PID。
+- 新增15项模拟回归，身份查询文件22/22；完整单元221/221；包含connect(null)的真实临时浏览器回归通过。
+- 在实际窗口只读核实完整身份后，取得操作锁、备份旧状态，仅补正实际PID等身份元数据。未改Cookie/Profile内容或原13项uncertain记录；现有MCP随后明确返回signedIn=true。
+- 该修正源码仍在审查分支，未覆盖已运行服务代码。当前实例恢复依靠经过验证的兼容状态迁移。
+- 已用独立session实际提交GitHub合成仓库审查；首次1秒观察到期返回running/timed_out=true，仍保留原task_id继续读取，没有重发。

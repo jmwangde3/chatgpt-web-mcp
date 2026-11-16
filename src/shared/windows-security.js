@@ -37,11 +37,11 @@ export function windowsQuery(script, input, { timeout = 8000, spawnImpl = spawn 
   });
 }
 const identityScript = `
-$p=Get-CimInstance Win32_Process -Filter ("ProcessId="+[int]$q.pid)
-if(-not $p){throw 'missing process'}
 $tcp=@(Get-NetTCPConnection -State Listen -LocalPort ([int]$q.port) -ErrorAction Stop)
 if($tcp.Count -ne 1){throw 'ambiguous listener'}
-@{pid=[int]$p.ProcessId;creationTime=$p.CreationDate.ToUniversalTime().ToString('o');executable=$p.ExecutablePath;commandLine=$p.CommandLine;ownerPid=[int]$tcp[0].OwningProcess;port=[int]$tcp[0].LocalPort;address=$tcp[0].LocalAddress}|ConvertTo-Json -Compress
+$p=Get-CimInstance Win32_Process -Filter ("ProcessId="+[int]$tcp[0].OwningProcess)
+if(-not $p){throw 'missing listener process'}
+@{pid=[int]$p.ProcessId;parentPid=[int]$p.ParentProcessId;creationTime=$p.CreationDate.ToUniversalTime().ToString('o');executable=$p.ExecutablePath;commandLine=$p.CommandLine;ownerPid=[int]$tcp[0].OwningProcess;port=[int]$tcp[0].LocalPort;address=$tcp[0].LocalAddress}|ConvertTo-Json -Compress
 `;
 export async function verifyWindowsProcess(expected, { query = windowsQuery } = {}) {
   if (!Number.isInteger(expected.pid) || expected.pid < 1 || !Number.isInteger(expected.port) || expected.port < 1 || expected.port > 65535) fail('BROWSER_IDENTITY_MISMATCH','Invalid PID or port.');
@@ -51,7 +51,16 @@ export async function verifyWindowsProcess(expected, { query = windowsQuery } = 
   const flag = name => { const values=flags.filter(t=>t.startsWith(name+'=')); return values.length === 1 ? values[0].slice(name.length+1) : ''; };
   actual.profile=flag('--user-data-dir');
   if (flag('--remote-debugging-port') !== String(expected.port) || !['127.0.0.1','::1'].includes(flag('--remote-debugging-address'))) fail('BROWSER_IDENTITY_MISMATCH','Browser command-line ownership flags did not match.');
-  assertWindowsIdentity({...expected,creationTime:expected.creationTime || actual.creationTime},actual);
+  let verifiedPID = expected.pid;
+  if (actual.pid !== expected.pid) {
+    // Chrome can re-exec into a direct child. Only migrate an un-enriched
+    // launch record with matching ancestry and a tightly bounded creation time.
+    // Every executable/profile/port/address check below still applies.
+    const delta = Date.parse(actual.creationTime) - expected.startedAt;
+    if (expected.creationTime || actual.parentPid !== expected.pid || !Number.isFinite(expected.startedAt) || !Number.isFinite(delta) || delta < -1000 || delta > 10000) fail('BROWSER_IDENTITY_MISMATCH','The listener is not the recorded browser or its verified launch child.');
+    verifiedPID = actual.pid;
+  }
+  assertWindowsIdentity({...expected,pid:verifiedPID,creationTime:expected.creationTime || actual.creationTime},actual);
   // Persist only identity metadata, never the full command line.
   return {creationTime:actual.creationTime, executable:actual.executable, profile:actual.profile, pid:actual.pid,port:actual.port};
 }

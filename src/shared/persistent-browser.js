@@ -106,16 +106,17 @@ export class PersistentBrowser {
   }
 
   async connect(signal) {
+    signal = signal || undefined;
     signal?.throwIfAborted();
     if (this.browser?.isConnected()) return this.context;
     if (this.attaching || this.disconnecting) throw new WebUIError('CONTROL_BUSY', 'The previous control connection is still closing; retry reading the same task later.');
     const config = this.config;
     this.launched = false;
     if (this.security) await this.security.paths(config);
-    const prior = await readState(config.browserState);
+    let prior = await readState(config.browserState);
     if (this.security && prior.pid) {
       const identity = await this.security.process({ ...prior, executable: config.executable, profile: config.profile });
-      if (!prior.creationTime) await writeState(config.browserState, { ...prior, ...identity });
+      if (!prior.creationTime || prior.pid !== identity.pid) { prior = { ...prior, ...identity }; await writeState(config.browserState, prior); }
     }
     const probe = port => browserEndpoint(port, { signal, fetchImpl: this.fetchImpl });
     let target = prior.profile === config.profile && processAlive(prior.pid) ? await probe(prior.port) : null;
@@ -143,7 +144,7 @@ export class PersistentBrowser {
       const deadline = Date.now() + config.actionTimeout;
       while (Date.now() < deadline && !(target = await probe(port))) {
         if (launchError) throw launchError;
-        if (child.exitCode !== null) throw new WebUIError("BROWSER_EXITED", "Browser exited; the dedicated profile may already be in use.");
+        if (child.exitCode !== null && !(this.security && process.platform === "win32" && child.exitCode === 0)) throw new WebUIError("BROWSER_EXITED", "Browser exited; the dedicated profile may already be in use.");
         await delay(200, undefined, { signal });
       }
       if (!target) throw new WebUIError("BROWSER_TIMEOUT", "Timed out connecting to the dedicated browser.");
@@ -151,7 +152,7 @@ export class PersistentBrowser {
     if (this.security) {
       const state = await readState(config.browserState);
       const identity = await this.security.process({ ...state, executable: config.executable, profile: config.profile });
-      if (!state.creationTime) await writeState(config.browserState, { ...state, ...identity });
+      if (!state.creationTime || state.pid !== identity.pid) await writeState(config.browserState, { ...state, ...identity });
     }
     signal?.throwIfAborted();
     const started = Date.now();
