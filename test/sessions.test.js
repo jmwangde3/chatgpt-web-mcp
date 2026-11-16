@@ -106,6 +106,45 @@ test('session, Pro tier and web search are part of idempotency; settings are ver
   assert.equal(f.sends.length, 1);
 });
 
+test('historical replay has no page operations; explicit thinking is part of request identity', async t => {
+  const f = await fixture(t);
+  const input = f.input('historical');
+  const original = await f.kernel.send(input);
+  const adapter = f.kernel.adapter('chatgpt', 'historical');
+  adapter.prepareSettings = true;
+  adapter.browser.runExclusive = async () => assert.fail('replay must not touch browser');
+  f.provider.forSession = () => adapter;
+  const restarted = new TaskKernel([f.provider], { directory: f.directory });
+  assert.equal((await restarted.send(input)).task_id, original.task_id);
+  await assert.rejects(restarted.send({...input, thinking_level:'高'}), {code:'IDEMPOTENCY_CONFLICT'});
+  assert.equal(f.sends.length, 1);
+  const gemini = await fixture(t, 'gemini');
+  await assert.rejects(gemini.kernel.send({...gemini.input('g'), thinking_level:'高'}), {code:'UNSUPPORTED_SETTING'});
+  assert.equal(gemini.sends.length, 0);
+});
+
+test('new ChatGPT task applies settings once and failure never sends', async t => {
+  const f = await fixture(t);
+  const adapter = f.kernel.adapter('chatgpt', 'new');
+  const operations = [];
+  adapter.prepareSettings = true;
+  const prepare = adapter.prepare;
+  adapter.prepare = async settings => { operations.push(settings); return prepare(); };
+  f.provider.forSession = () => adapter;
+  const result = await f.kernel.send({...f.input('new'), model:'Other', thinking_level:'中'});
+  assert.equal(result.state, 'submitted');
+  assert.equal(operations.length, 1);
+  assert.equal(operations[0].model, 'Other');
+  assert.equal(operations[0].thinking_level, '中');
+  const g = await fixture(t);
+  const failing = g.kernel.adapter('chatgpt', 'failed');
+  failing.prepareSettings = true;
+  failing.prepare = async () => { throw new Error('settings unverified'); };
+  g.provider.forSession = () => failing;
+  assert.equal((await g.kernel.send(g.input('failed'))).state, 'failed');
+  assert.equal(g.sends.length, 0);
+});
+
 test('invalid sessions, unsupported settings and failed tier checks never send', async t => {
   const f = await fixture(t);
   for (const id of ['', '../escape', '__proto__', 'constructor', null, 42]) assert.throws(() => validateSessionId(id), { code: 'INVALID_SESSION' });

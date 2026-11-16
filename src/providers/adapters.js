@@ -49,21 +49,22 @@ export function geminiProvider(browser) {
 
 export function chatgptProvider(browser) {
   return {
-    id: 'chatgpt', browser, stagedSend: true,
+    id: 'chatgpt', browser, stagedSend: true, prepareSettings: true,
     localConfig: { executable: CHROME_EXECUTABLE, browserState: BROWSER_STATE_FILE, runtimeState: RUNTIME_STATE_FILE, operationLock: OPERATION_LOCK_FILE },
     capabilities: { files: true, models: true, history: true, archive: 'provider-transcript', cancellation: true, sessions: true },
     isRoot: (url) => url === 'https://chatgpt.com',
     isProvisional: (url) => /^\/c\/(?:WEB:|local-chatgpt:)[^/]+$/.test(decodeURIComponent(new URL(url).pathname)),
     restore: (url) => browser.restoreTaskConversation(url),
-    async prepare() {
+    async prepare({ model, thinking_level, answer_tier } = {}) {
       await browser.assertActionsAllowed('chat_send');
       await browser.ensureSignedIn();
       await browser.assertComposerEmpty('chat_send');
       await browser.ensureConversationCapacity({ allowRotate: false });
       await browser.refreshBeforeSend({ reason: 'unified-send' });
+      const settings = await browser.applySendSettings({ model, thinkingLevel: thinking_level, answerTier: answer_tier });
       const s = await browser.getLatestResponse({ includeTranscript: false });
       if (s.generating) throw new WebUIError('GENERATING', 'ChatGPT is still generating.');
-      return { url: s.url, userCount: s.userMessageCount, responseCount: s.assistantMessageCount };
+      return { url: s.url, userCount: s.userMessageCount, responseCount: s.assistantMessageCount, ...(settings.answerTier ? { answerTier: settings.answerTier } : {}) };
     },
     async send({ prompt, files, beforeSubmit }) {
       if (files.length) await browser.uploadFiles(files);

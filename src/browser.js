@@ -14,6 +14,8 @@ import {
   CONVERSATION_CHANGE_INTERVAL_MS,
   CONTEXT_ARCHIVE_DIR,
   DEFAULT_ANSWER_TIER,
+  DEFAULT_CHAT_MODEL,
+  DEFAULT_CHAT_THINKING_LEVEL,
   HEADLESS,
   HISTORY_QUIET_PERIOD_MS,
   MAX_HISTORY_RESULTS,
@@ -2074,6 +2076,7 @@ export class ChatGPTBrowser {
       const input = element instanceof HTMLInputElement ? element : null;
       const number = (name, fallback) => {
         const raw = element.getAttribute(name) ?? fallback;
+        if (raw == null || raw === "") return null;
         const value = Number(raw);
         return Number.isFinite(value) ? value : null;
       };
@@ -2104,7 +2107,7 @@ export class ChatGPTBrowser {
     const explicitPro = [values.text, values.ariaLabel, values.title].find((value) =>
       /(^|[\s._-])pro($|[\s._-])/i.test(value),
     );
-    return explicitPro ? "Pro" : parseAnswerTier(values.text || values.ariaLabel || values.title);
+    return explicitPro ? "Pro" : parseAnswerTier((values.text || values.ariaLabel || values.title).replace(/^(?:思考强度|thinking effort)\s*[:：]?\s*/i, ""));
   }
 
   async openAnswerTierControl() {
@@ -2376,8 +2379,23 @@ export class ChatGPTBrowser {
     await page.waitForTimeout(250);
   }
 
-  async directAdvancedSettings() {
+  async directAdvancedSettings(menu = null) {
     const page = await this.page();
+    if (menu) {
+      const toggle = menu.locator("[role='menuitem'][aria-label='选择模型']:visible");
+      const strength = menu.locator("[role='menuitem'][aria-label='强度']:visible");
+      const slider = strength.locator("[role='slider']:visible");
+      const checked = menu.locator("[role='menuitemradio'][aria-checked='true']:visible");
+      const status = menu.locator("[role='status']:visible");
+      if (await toggle.count() !== 1 || await strength.count() !== 1 || await slider.count() !== 1 || await checked.count() !== 1 || await status.count() !== 1) {
+        throw new ChatGPTWebError("模型菜单控件缺失或存在歧义。");
+      }
+      const level = parseAnswerTier(await toggle.innerText());
+      const statusLevel = parseAnswerTier(await status.innerText());
+      const model = (await checked.innerText()).replace(/\s+/g, " ").trim();
+      if (!level || level !== statusLevel || !model) throw new ChatGPTWebError("模型菜单当前状态无法核验。");
+      return { layout: "semantic-direct-picker", picker: menu, slider, modelRow: { locator: toggle, value: model }, thinkingRow: { locator: slider, value: level } };
+    }
     const picker = page
       .locator("[data-testid='composer-intelligence-picker-content']:visible")
       .last();
@@ -2448,11 +2466,20 @@ export class ChatGPTBrowser {
         { url: page.url() },
       );
     }
+    const semanticTrigger = await trigger.getAttribute("aria-label") === "选择 ChatGPT 模型" && await trigger.getAttribute("aria-haspopup") === "menu";
+    const priorMenus = semanticTrigger ? await page.locator("[role='menu']:visible").count() : 0;
+    if (priorMenus) throw new ChatGPTWebError("打开模型菜单前已有可见菜单，无法安全关联控件。");
     await this.click(trigger, "open-advanced-settings");
     await page.waitForTimeout(180);
 
     const direct = await this.directAdvancedSettings();
     if (direct) return direct;
+    const menus = page.locator("[role='menu']:visible");
+    if (await menus.count() === 1 && semanticTrigger) {
+      try { return await this.directAdvancedSettings(menus); }
+      catch (error) { await this.closeAdvancedMenus(); throw error; }
+    }
+    if (semanticTrigger && await menus.count() > 1) { await this.closeAdvancedMenus(); throw new ChatGPTWebError("打开模型菜单后出现多个菜单，无法安全关联控件。"); }
 
     modelRow = await this.advancedRow(SELECTORS.modelRowLabels);
     thinkingRow = await this.advancedRow(SELECTORS.thinkingRowLabels);
@@ -2584,8 +2611,13 @@ export class ChatGPTBrowser {
       models = await this.visibleMenuOptions();
       current = await this.currentModel();
     } else {
-      const { modelRow, thinkingRow } = await this.openAdvancedSettings();
+      const { modelRow, thinkingRow, layout, picker } = await this.openAdvancedSettings();
       current = modelRow.value;
+      if (layout === "semantic-direct-picker") {
+        models = await picker.locator("[role='menuitemradio']:visible").evaluateAll(nodes => nodes.map(node => ({name: (node.innerText || '').replace(/\s+/g, ' ').trim(), role: 'menuitemradio'})).filter(item => item.name));
+        await this.closeAdvancedMenus();
+        return { current, models };
+      }
       await this.clickAdvancedRow(modelRow);
       models = await this.visibleMenuOptions({
         exclude: [modelRow.text, thinkingRow.text],
@@ -2604,8 +2636,33 @@ export class ChatGPTBrowser {
       await this.openLegacyModelMenu();
       options = await this.visibleMenuOptions();
     } else {
-      const { modelRow, thinkingRow } = await this.openAdvancedSettings();
+      const { modelRow, thinkingRow, layout, picker } = await this.openAdvancedSettings();
       observedThinkingLevel = thinkingRow.value;
+      if (layout === "semantic-direct-picker") {
+        if (normalize(modelRow.value) === normalize(model)) {
+          await this.closeAdvancedMenus();
+          return { requested: model, selected: modelRow.value, changed: false };
+        }
+        const radios = picker.locator("[role='menuitemradio']:visible");
+        const matches = [];
+        for (let i = 0; i < await radios.count(); i++) {
+          const radio = radios.nth(i);
+          if (normalize(await radio.innerText()) === normalize(model)) matches.push(radio);
+        }
+        if (matches.length !== 1 || await matches[0].getAttribute('aria-disabled') === 'true' || await matches[0].getAttribute('disabled') !== null) {
+          await this.closeAdvancedMenus();
+          throw new ChatGPTWebError("请求的模型不存在、不可用或存在歧义。", { requested: model });
+        }
+        await this.click(matches[0], "select-model");
+        await page.waitForTimeout(250);
+        await this.closeAdvancedMenus();
+        const verified = await this.openAdvancedSettings();
+        const selected = verified.modelRow.value;
+        await this.closeAdvancedMenus();
+        if (verified.layout !== "semantic-direct-picker" || normalize(selected) !== normalize(model)) throw new ChatGPTWebError("模型切换后未通过页面校验。", { requested: model, observed: selected });
+        this.rememberSettings(selected, verified.thinkingRow.value);
+        return { requested: model, selected, changed: true, verifiedBy: "checked-radio" };
+      }
       if (normalize(modelRow.value) === normalize(model)) {
         await this.closeAdvancedMenus();
         return { requested: model, selected: modelRow.value, changed: false };
@@ -2659,7 +2716,7 @@ export class ChatGPTBrowser {
     const { modelRow, thinkingRow, layout, slider: directSlider } =
       await this.openAdvancedSettings();
     const current = thinkingRow.value;
-    if (layout === "direct-picker") {
+    if (layout === "direct-picker" || layout === "semantic-direct-picker") {
       const slider = await this.answerTierSliderState(directSlider);
       await this.closeAdvancedMenus();
       return {
@@ -2763,11 +2820,11 @@ export class ChatGPTBrowser {
       await this.closeAdvancedMenus();
       return { requested: thinkingLevel, selected: thinkingRow.value, changed: false };
     }
-    if (opened.layout === "direct-picker") {
+    if (opened.layout === "direct-picker" || opened.layout === "semantic-direct-picker") {
       const sliderState = await this.answerTierSliderState(opened.slider);
-      const min = Number(sliderState?.min);
-      const max = Number(sliderState?.max);
-      const original = Number(sliderState?.now);
+      const min = sliderState?.min;
+      const max = sliderState?.max;
+      const original = sliderState?.now;
       if (
         !Number.isFinite(min) ||
         !Number.isFinite(max) ||
@@ -2783,17 +2840,23 @@ export class ChatGPTBrowser {
       }
 
       const available = [];
+      try {
       await opened.slider.focus();
       await this.press(opened.slider, "Home", "thinking-slider-home");
       for (let position = min; position <= max; position += 1) {
         await page.waitForTimeout(100);
-        const observed = parseAnswerTier(
-          await opened.modelRow.locator.innerText().catch(() => ""),
-        );
+        const observed = opened.layout === "semantic-direct-picker"
+          ? (await this.directAdvancedSettings(opened.picker)).thinkingRow.value
+          : parseAnswerTier(await opened.modelRow.locator.innerText().catch(() => ""));
         if (observed) available.push(observed);
         if (normalize(observed) === normalize(thinkingLevel)) {
           await this.closeAdvancedMenus();
-          const selected = await this.answerTierControlLabel();
+          let selected;
+          if (opened.layout === "semantic-direct-picker") {
+            const verified = await this.openAdvancedSettings();
+            selected = verified.thinkingRow.value;
+            await this.closeAdvancedMenus();
+          } else selected = await this.answerTierControlLabel();
           if (normalize(selected) !== normalize(thinkingLevel)) {
             throw new ChatGPTWebError("思考强度切换后未通过页面校验。", {
               requested: thinkingLevel,
@@ -2812,6 +2875,15 @@ export class ChatGPTBrowser {
         if (position < max) {
           await this.press(opened.slider, "ArrowRight", "thinking-slider-increment");
         }
+      }
+      } catch (error) {
+        try {
+          if (await opened.slider.isVisible()) {
+            await this.press(opened.slider, "Home", "thinking-slider-restore-home");
+            for (let position = min; position < original; position += 1) await this.press(opened.slider, "ArrowRight", "thinking-slider-restore");
+          }
+        } finally { await this.closeAdvancedMenus(); }
+        throw error;
       }
 
       await this.press(opened.slider, "Home", "thinking-slider-restore-home");
@@ -3865,6 +3937,27 @@ export class ChatGPTBrowser {
     };
   }
 
+  async applySendSettings({ model, thinkingLevel, answerTier } = {}) {
+    if (thinkingLevel && answerTier && normalize(thinkingLevel) !== normalize(answerTier)) {
+      throw new ChatGPTWebError("思考强度和回答档位冲突，未发送。", { thinkingLevel, answerTier });
+    }
+    const useDefaults = !model && !thinkingLevel && !answerTier;
+    const targetModel = model || (useDefaults ? DEFAULT_CHAT_MODEL : null);
+    const targetThinking = thinkingLevel || (useDefaults ? DEFAULT_CHAT_THINKING_LEVEL : null);
+    if (targetModel) await this.selectModel(targetModel);
+    if (targetThinking) await this.selectThinkingLevel(targetThinking);
+    const tierResult = answerTier && !thinkingLevel ? await this.selectAnswerTier(answerTier) :
+      answerTier ? { selected: thinkingLevel, verifiedBy: "thinking-level" } : null;
+    if (targetModel || targetThinking) {
+      const observed = await this.advancedSettings({ force: true });
+      if ((targetModel && normalize(observed.model) !== normalize(targetModel)) ||
+          (targetThinking && normalize(observed.thinkingLevel) !== normalize(targetThinking))) {
+        throw new ChatGPTWebError("发送前模型或思考强度未通过页面复核。", { requested: { model: targetModel, thinkingLevel: targetThinking }, observed });
+      }
+    }
+    return { model: targetModel, thinkingLevel: targetThinking, answerTier: tierResult };
+  }
+
   async sendMessage({
     prompt,
     files = [],
@@ -3881,7 +3974,7 @@ export class ChatGPTBrowser {
     let rotation = null;
     if (newChat || temporary) {
       await this.newChat(
-        { temporary, model, mode, thinkingLevel, answerTier },
+        { temporary, mode },
         { includeStatus: false },
       );
     } else {
@@ -3892,14 +3985,12 @@ export class ChatGPTBrowser {
       // control error.
       await this.unarchiveConversationIfNeeded();
       if (mode) await this.selectMode(mode);
-      if (model) await this.selectModel(model);
-      if (thinkingLevel) await this.selectThinkingLevel(thinkingLevel);
-      if (answerTier) await this.selectAnswerTier(answerTier);
     }
     // Refresh after conversation/settings changes and before any upload or
     // composer mutation.  This prevents a stale page tree from targeting an
     // existing user turn while keeping attachments intact.
     const refreshResult = await this.refreshBeforeSend({ reason: "send-message" });
+    await this.applySendSettings({ model, thinkingLevel, answerTier });
     if (files.length) await this.uploadFiles(files);
     await this.writePrompt(prompt);
     const search = webSearch ? await this.enableWebSearch() : { selected: false };
@@ -3925,7 +4016,7 @@ export class ChatGPTBrowser {
       throw new ChatGPTWebError("临时 Pro 身份探针默认停用；未打开临时对话，也未发送测试消息。", {
         probeEnabled: false,
         configuration: "CHATGPT_WEB_PROBE_ENABLED=false",
-        nextStep: "使用 requestPro=false 的普通极高路由；仅在明确需要实验性身份探针时手动启用该配置。",
+        nextStep: "仅在明确需要旧极高路由时使用 requestPro=false；仅在明确需要实验性身份探针时手动启用该配置。",
       });
     }
   }

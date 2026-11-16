@@ -340,6 +340,8 @@ async function taskFixture(t) {
     runExclusive: async (fn) => fn(),
     assertActionsAllowed: noop, ensureSignedIn: noop, assertComposerEmpty: noop,
     ensureConversationCapacity: noop, refreshBeforeSend: noop,
+    // This fixture tests transcript and durable recovery; settings are covered separately.
+    applySendSettings: async () => ({}),
     writePrompt: async (prompt) => { draft = prompt; },
     submitPrompt: async () => { assert.ok(draft); sends++; return { url }; },
     settleManagedGeneration: async () => { settled++; },

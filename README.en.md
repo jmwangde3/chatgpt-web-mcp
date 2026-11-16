@@ -1,5 +1,9 @@
 # ChatGPT & Gemini Web MCP
 
+## Current send defaults
+
+For ChatGPT, `chat_send` and `chatgpt_send_message` select and reverify GPT-6 + 高 before sending when model, thinking level and answer tier are all omitted. Explicit settings take precedence; an unspecified counterpart stays unchanged. Conflicting thinking level and answer tier fail before sending. Gemini is unaffected. The legacy extreme-tier route runs only when explicitly invoked. Reconnect existing MCP clients to load changes. This repository prefers web GPT-6 High for reasoning and Codex 6.1 Terra medium for execution as a collaboration convention; MCP does not switch the host model or delegate automatically.
+
 ## Browser stability fixes (0.7.11)
 
 Both providers now use bounded loopback probes, CDP attachment and controller cleanup. A timeout preserves the dedicated browser, draft and pending task. A live but unreachable browser never triggers a duplicate launch against its profile. `chat_result.timeoutMs` also covers journal-lock contention and observation, with up to approximately five additional seconds for controller cleanup. Continue reading the same task after a timeout; nothing is automatically resent. Persistent `CONTROL_BUSY` means cleanup is unconfirmed: reconnect MCP and read the original task.
@@ -15,9 +19,9 @@ ChatGPT now recognizes the current Send button and verifies the appended prompt 
 
 ## MCP + web expert skill
 
-This repository includes both the MCP server (`src/`) and the [web-chat expert skill](skills/web-chat/SKILL.md). The skill prepares the current agent task's questions, context and authorized files, consults ChatGPT or Gemini in the browser, waits for the full answer, and brings it back to continue the original task. The default expert is Gemini **4 Argon + High**; explicit provider/model requests take precedence.
+This repository includes both the MCP server (`src/`) and the [web-chat expert skill](skills/web-chat/SKILL.md). The skill prepares the current agent task's questions, context and authorized files, consults ChatGPT or Gemini in the browser, waits for the full answer, and brings it back to continue the original task. The default expert is ChatGPT **GPT-6 + 高**; explicit provider/model requests take precedence.
 
-Version 0.7.10 expands Gemini's nested Thinking level menu before selecting and verifying High, while retaining flat-menu and legacy Extended thinking support. Missing or unverified settings stop submission without downgrading. This default belongs to the skill: MCP callers still specify a provider and retain their chosen settings on send. Reconnect MCP after upgrading and copy the updated `skills/web-chat` directory to update an installed skill.
+Version 0.7.10 expanded Gemini's nested Thinking level menu before selecting and verifying High, while retaining flat-menu and legacy Extended thinking support. Gemini settings still require explicit selection; current ChatGPT send defaults are described above. Reconnect MCP after upgrading; update an installed skill separately when desired.
 
 See the [Codex installation and usage guide](docs/CODEX_SKILL.md) to register the `web-chat` MCP and install the skill. If the MCP is already configured, install only the skill. Example: `Use $web-chat to ask Gemini to review this plan, then use its complete response to improve the plan.`
 
@@ -106,7 +110,7 @@ An unofficial local MCP server that lets Codex and other MCP clients operate `ch
 - Keep the dedicated browser and ChatGPT page open between MCP calls
 - Serialize browser control across MCP processes and apply conservative delays
 - Gate new actions on rate-limit text or conversation-generation POST HTTP 429; background/history 429 is diagnostic-only, with no endpoint retry; completed answers remain readable
-- Use the default extreme tier with temporary Pro identity probes disabled by default, avoiding extra temporary chats and test messages
+- Default ChatGPT sends to GPT-6 + 高 with temporary Pro identity probes disabled, avoiding extra temporary chats and test messages
 - Rotate conversations before the 40-turn cap, loading older lazy history and archiving the complete transcript first; direct submit calls are rejected at the cap
 - Store only sanitized network error metadata
 
@@ -164,7 +168,7 @@ chatgpt-web-mcp help     Show command help
 
 ## Configurable routing policy
 
-Normal requests create a non-temporary chat with the available `极高` tier using `chatgpt_route_new_chat(requestPro=false)`.
+The explicitly invoked legacy `chatgpt_route_new_chat(requestPro=false)` creates a non-temporary chat with the available `极高` tier; it is not automatically called for ordinary sends.
 
 **Temporary Pro identity probes are disabled by default** (`CHATGPT_WEB_PROBE_ENABLED=false`). Both `chatgpt_probe_pro_identity` and `requestPro=true` fail before opening a temporary chat or sending a probe; `forceProbe=true` does not bypass the switch. This avoids extra conversations and test requests. Explicitly selecting a Pro option that the UI actually offers is still possible, but actual model routing is not guaranteed.
 

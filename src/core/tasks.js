@@ -87,7 +87,7 @@ export class TaskKernel {
       return result;
     }, signal);
   }
-  async send({ provider: id, request_id, prompt, files = [], model, newConversation = false, session_id, answer_tier, web_search = false, existing_draft = false }, { signal } = {}) {
+  async send({ provider: id, request_id, prompt, files = [], model, newConversation = false, session_id, answer_tier, thinking_level, web_search = false, existing_draft = false }, { signal } = {}) {
     const adapter = this.adapter(id, session_id);
     if (typeof existing_draft !== 'boolean' || (existing_draft && (id !== 'gemini' || model || newConversation))) throw new WebUIError('INVALID_DRAFT_RECOVERY', 'existing_draft requires Gemini and cannot change the model or conversation.');
     if (typeof request_id !== 'string' || !request_id.trim() || request_id.length > 128) throw new WebUIError('INVALID_REQUEST_ID', 'A nonempty request_id of at most 128 characters is required. Reuse it after a timeout.');
@@ -96,9 +96,10 @@ export class TaskKernel {
     const requestHash = fingerprint(request_id);
     if (model !== undefined && (typeof model !== 'string' || !model.trim())) throw new WebUIError('INVALID_MODEL', 'model must be a nonempty exact name.');
     if (answer_tier !== undefined && (typeof answer_tier !== 'string' || !answer_tier.trim())) throw new WebUIError('INVALID_TIER', 'answer_tier must be an exact available tier.');
+    if (thinking_level !== undefined && (typeof thinking_level !== 'string' || !thinking_level.trim())) throw new WebUIError('INVALID_THINKING_LEVEL', 'thinking_level must be a nonempty exact name.');
     if (typeof web_search !== 'boolean') throw new WebUIError('INVALID_SEARCH', 'web_search must be a boolean.');
-    if ((answer_tier || web_search) && id !== 'chatgpt') throw new WebUIError('UNSUPPORTED_SETTING', 'answer_tier and web_search currently require ChatGPT.');
-    const payloadHash = fingerprint({ prompt, files, ...(model ? { model } : {}), ...(newConversation ? { newConversation: true } : {}), ...(session_id ? { session_id } : {}), ...(answer_tier ? { answer_tier } : {}), ...(web_search ? { web_search } : {}), ...(existing_draft ? { existing_draft: true } : {}) });
+    if ((answer_tier || thinking_level || web_search) && id !== 'chatgpt') throw new WebUIError('UNSUPPORTED_SETTING', 'answer_tier, thinking_level and web_search currently require ChatGPT.');
+    const payloadHash = fingerprint({ prompt, files, ...(model ? { model } : {}), ...(newConversation ? { newConversation: true } : {}), ...(session_id ? { session_id } : {}), ...(answer_tier ? { answer_tier } : {}), ...(thinking_level ? { thinking_level } : {}), ...(web_search ? { web_search } : {}), ...(existing_draft ? { existing_draft: true } : {}) });
     return this.locked(id, async (state, save) => {
       const existing = Object.values(state.tasks).find((task) => task.requestHash === requestHash);
       if (existing) {
@@ -126,13 +127,15 @@ export class TaskKernel {
             const previous = Object.values(state.tasks).filter(t => t.task_id !== task.task_id && t.session_id === session_id && t.conversation_url).sort((a, b) => b.created_at - a.created_at)[0];
             if (previous && !(state.sessionNavigations?.[session_id] >= previous.created_at)) await adapter.restore(previous.conversation_url);
           }
-          if (model) await adapter.browser.selectModel(model);
-          task.baseline = await adapter.prepare({ prompt, files, existing_draft });
+          if (model && !adapter.prepareSettings) await adapter.browser.selectModel(model);
+          task.baseline = await adapter.prepare({ prompt, files, existing_draft, model, thinking_level, answer_tier });
+          if (adapter.prepareSettings && task.baseline.answerTier) task.answer_tier = task.baseline.answerTier;
           const baselineURL = canonicalURL(task.baseline.url);
           if (!adapter.isRoot(baselineURL) && !adapter.isProvisional?.(baselineURL) && Object.values(state.tasks).some(other => other.task_id !== task.task_id && !terminal.has(other.state) && [other.conversation_url, other.baseline?.url].some(url => url && canonicalURL(url) === baselineURL))) {
             throw new WebUIError('CONVERSATION_ACTIVE', 'Another session has an active task in this conversation. Use a new conversation for independent work.');
           }
-          if (answer_tier) task.answer_tier = await adapter.browser.selectAnswerTier(answer_tier);
+          if (answer_tier && !adapter.prepareSettings) task.answer_tier = await adapter.browser.selectAnswerTier(answer_tier);
+          if (thinking_level && !adapter.prepareSettings) await adapter.browser.selectThinkingLevel(thinking_level);
           if (web_search) await adapter.browser.enableWebSearch();
           // Persist before the first possible send. A crash from this point on
           // must be reconciled from the page, never retried automatically.

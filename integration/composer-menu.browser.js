@@ -71,3 +71,68 @@ test('answer tier waits for hydration and never selects an unrelated pill or his
   await page.locator('#tier').evaluate(e => e.remove());
   assert.equal(await reader.advancedControlButton(), null);
 });
+
+for (const label of ['中', '思考强度 高']) {
+  test('recognizes current model trigger: ' + label, async t => {
+    const {page} = await fixture(t, `<form><textarea id="composer"></textarea><button id="tier" aria-label="选择 ChatGPT 模型" aria-haspopup="menu">${label}</button><button onclick="window.wrong=true">中</button></form>`);
+    const reader = new ChatGPTBrowser(); reader.page = async () => page; reader.composer = async () => page.locator('#composer');
+    assert.equal(await (await reader.advancedControlButton()).getAttribute('id'), 'tier');
+    assert.equal(await page.evaluate(() => window.wrong), undefined);
+  });
+}
+
+test('semantic picker lists and verifies model and thinking changes', async t => {
+  const {page} = await fixture(t, `<form><textarea id="composer"></textarea><button type="button" id="tier" aria-label="选择 ChatGPT 模型" aria-haspopup="menu">中</button></form><div role="menu" id="menu" hidden><div role="menuitem" aria-label="选择模型">中</div><span role="status">中，第 2 项，共 3 项。</span><div role="menuitem" aria-label="强度"><span role="slider" aria-hidden="true" tabindex="-1" aria-valuemin="0" aria-valuemax="2" aria-valuenow="1"></span></div><div role="menuitemradio" aria-checked="true">GPT-6</div><div role="menuitemradio" aria-checked="false">GPT-5.6 Sol</div></div>`);
+  await page.addStyleTag({content: '[role=slider] { display: inline-block; width: 100px; height: 20px }'});
+  await page.evaluate(() => {
+    const trigger = document.querySelector('#tier'), menu = document.querySelector('#menu'), slider = menu.querySelector('[role=slider]');
+    trigger.onclick = () => { menu.hidden = false; };
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') menu.hidden = true; });
+    slider.onkeydown = e => { let n = +slider.getAttribute('aria-valuenow'); if (e.key === 'Home') n = 0; if (e.key === 'ArrowRight') n = Math.min(2,n+1); slider.setAttribute('aria-valuenow',n); const v=['即时','中','高'][n]; menu.querySelector('[aria-label="选择模型"]').textContent=v; menu.querySelector('[role=status]').textContent=v+'，第 '+(n+1)+' 项，共 3 项。'; trigger.textContent='思考强度 '+v; };
+    menu.querySelectorAll('[role=menuitemradio]').forEach(r => r.onclick = () => { menu.querySelectorAll('[role=menuitemradio]').forEach(x => x.setAttribute('aria-checked','false')); r.setAttribute('aria-checked','true'); menu.hidden=true; });
+  });
+  const reader = new ChatGPTBrowser(); reader.page = async () => page; reader.composer = async () => page.locator('#composer'); reader.ensureSignedIn = async () => {}; reader.pageInteraction = async () => {};
+  await page.locator('[role=status]').evaluate(e => e.textContent = '错误');
+  await assert.rejects(reader.listModels(), /无法核验/);
+  assert.equal(await page.locator('#menu').isVisible(), false);
+  await page.locator('[role=status]').evaluate(e => e.textContent = '中，第 2 项，共 3 项。');
+  assert.equal((await reader.listModels()).current, 'GPT-6');
+  assert.equal((await reader.listThinkingLevels()).current, '中');
+  assert.equal((await reader.selectThinkingLevel('高')).selected, '高');
+  await page.locator('[role=menuitemradio]').nth(1).evaluate(e => { e.onclick = () => { document.querySelector('#menu').hidden = true; }; });
+  await assert.rejects(reader.selectModel('GPT-5.6 Sol'), /未通过页面校验/);
+  await page.locator('[role=menuitemradio]').nth(1).evaluate(e => { e.onclick = () => { document.querySelectorAll('[role=menuitemradio]').forEach(x => x.setAttribute('aria-checked', 'false')); e.setAttribute('aria-checked', 'true'); document.querySelector('#menu').hidden = true; }; });
+  assert.equal((await reader.selectModel('GPT-5.6 Sol')).selected, 'GPT-5.6 Sol');
+  const sequence = [];
+  for (const method of ['selectModel', 'selectThinkingLevel', 'advancedSettings']) {
+    const original = reader[method].bind(reader);
+    reader[method] = async (...args) => { sequence.push(method); return original(...args); };
+  }
+  await reader.applySendSettings();
+  sequence.push('send'); // represents the adapter's later submission boundary
+  assert.deepEqual(sequence, ['selectModel', 'selectThinkingLevel', 'advancedSettings', 'send']);
+  assert.equal(await page.locator('[role=menuitemradio][aria-checked=true]').innerText(), 'GPT-6');
+  assert.equal(await page.locator('[role=menuitem][aria-label="选择模型"]').innerText(), '高');
+  assert.equal(await page.evaluate(() => window.wrong), undefined);
+});
+
+test('older testid direct picker remains readable', async t => {
+  const {page} = await fixture(t, `<div data-testid="composer-intelligence-picker-content"><div data-testid="composer-model-picker-slider-simple-view"><span role="slider" style="display:inline-block;width:20px;height:20px"></span></div><div data-testid="composer-model-picker-slider-advanced-view"><div role="menuitemradio" aria-checked="true">GPT-6</div></div><div role="menuitem" aria-label="选择模型">高</div></div>`);
+  const reader = new ChatGPTBrowser(); reader.page = async () => page;
+  const result = await reader.directAdvancedSettings();
+  assert.equal(result.layout, 'direct-picker');
+  assert.equal(result.modelRow.value, 'GPT-6');
+  assert.equal(result.thinkingRow.value, '高');
+});
+
+test('semantic menu rejects ambiguous or inconsistent controls', async t => {
+  const {page} = await fixture(t, `<div role="menu"><div role="menuitem" aria-label="选择模型">高</div><span role="status">高，第 3 项，共 3 项。</span><div role="menuitem" aria-label="强度"><span role="slider" style="display:inline-block;width:20px;height:20px"></span></div><div role="menuitemradio" aria-checked="true">GPT-6</div></div>`);
+  const reader = new ChatGPTBrowser(); reader.page = async () => page;
+  const menu = page.locator('[role=menu]');
+  assert.equal((await reader.directAdvancedSettings(menu)).modelRow.value, 'GPT-6');
+  await menu.locator('[role=status]').evaluate(e => e.textContent = '中，第 2 项，共 3 项。');
+  await assert.rejects(reader.directAdvancedSettings(menu), /无法核验/);
+  await menu.locator('[role=status]').evaluate(e => e.textContent = '高，第 3 项，共 3 项。');
+  await menu.locator('[role=slider]').evaluate(e => e.parentNode.append(e.cloneNode()));
+  await assert.rejects(reader.directAdvancedSettings(menu), /歧义/);
+});

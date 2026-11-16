@@ -12,7 +12,8 @@ export function answerTierControlDOM(composer) {
     const box = button.getBoundingClientRect();
     if (!box.width || !box.height || getComputedStyle(button).visibility === 'hidden' || button.disabled || button.getAttribute('aria-disabled') === 'true') return [];
     const labels = [button.innerText, button.getAttribute('aria-label'), button.getAttribute('title')].map(v => (v || '').replace(/\s+/g, ' ').trim());
-    if (!labels.some(label => tier.test(label))) return [];
+    const modelPicker = button.getAttribute('aria-label') === '选择 ChatGPT 模型' && button.getAttribute('aria-haspopup') === 'menu';
+    if (!modelPicker && !labels.some(label => tier.test(label))) return [];
     const distance = Math.abs(box.y + box.height / 2 - rect.y - rect.height / 2);
     if (distance > Math.max(160, rect.height * 2)) return [];
     return [{ button, score: distance + Math.abs(box.x + box.width / 2 - rect.right) * 0.02 }];

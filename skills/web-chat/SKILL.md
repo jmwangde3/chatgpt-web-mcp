@@ -16,7 +16,7 @@ description: "通过本机 web-chat MCP 的专用浏览器咨询 ChatGPT 或 Gem
 
 ## 平台与任务范围
 
-- 用户指定 ChatGPT、Gemini、模型或已有网页会话时遵从指定。未指定平台时默认 Gemini，专家设置为 **4 Argon + High**，并在发送前的简短进度说明中告知；本次任务已有明确平台则沿用。
+- 用户指定 ChatGPT、Gemini、模型或已有网页会话时遵从指定。未指定平台时默认 ChatGPT **GPT-6 + 高**，发送前告知；本次任务已有明确平台则沿用。本仓库协作偏好网页 GPT-6 高思考、Codex 6.1 Terra medium 执行；这只是约定，不切换宿主模型或自动委派。
 - 调用本 Skill 并要求咨询，意味着可以把本任务所需的问题、用户提供的背景、相关资料及明确授权范围内的文件送给选定网页专家。已有授权不重复询问。自动发现 Skill 本身不授权外发普通任务数据；仅要求安装、配置或解释 Skill 时，不发送实际咨询。
 - 文件授权包括用户点名、为此咨询附加的文件，或用户明确要求共享的项目/目录范围内的相关文件。可读取不等于已获上传授权。超出范围时先列出具体文件及用途再询问，不上传整个工作区。摘录和摘要遵守同一分享范围。
 - 只发送本次咨询需要的内容。不发送系统/开发者指令、凭证、浏览器配置、Cookie、其他聊天记录或无关个人资料。
@@ -50,8 +50,8 @@ description: "通过本机 web-chat MCP 的专用浏览器咨询 ChatGPT 或 Gem
 1. 发现工具；必要时调用 `chat_providers({})` 检查能力，`chat_doctor` 仅检查本地环境，不证明网页登录成功。工具未加载时说明需加载已有 MCP，不另行安装副本。
 2. 用 `chat_status({provider})` 核实网页和托管任务状态。需要登录/验证码时让用户在专用浏览器中完成，再继续；不索取密码或 Cookie。
 3. 独立咨询用 `chat_new({provider})` 新建会话；追问继续本任务原会话。已有草稿、附件、正在运行的任务或页面身份不符时先检查，不清空或覆盖用户内容，不修改其他任务占用的页面。
-4. 区分 **ChatGPT 回答档位**与**具体模型名称**：用户仅要求“Pro／Pro 档位”时，在下节的 `chat_send` 中传 `answer_tier:"Pro"` 并省略 `model`；MCP 会在上传材料和发送前选择、核验档位，失败则停止。不要为此先调用 `chat_models` 或 `chat_select_model(model:"Pro")`，它们走另一套模型菜单路径。用户指定具体模型名称时才先 `chat_models({provider})`，再按实际返回名称调用 `chat_select_model({provider, model})`。读模型列表报“没有找到‘高级’入口”表示菜单识别失败，不证明 Pro 不可用；不要猜模型名称继续选择。具体模型要求未核验时停止并报告，不能用 Pro 档位代替指定模型。ChatGPT 未要求时保留当前设置，不自动选 Pro。遵守 MCP 当前平台规则，不调用 Pro 身份探针。
-5. 本仓库的 Gemini 默认专家是 **4 Argon + High**；用户明确指定其他设置时优先遵从。先核实模型列表确有 `4 Argon`，再调用 `chat_select_model({provider:"gemini", session_id:"本次会话", model:"4 Argon", extended_thinking:true})`。确认 `selectionVerified:true`、`extendedThinking:true`、`thinkingVerified:true` 和 `thinkingLevel:"High"` 后才发送。High 是独立思考档位，不是模型名称；MCP 0.7.10+ 会展开新版 Thinking level 子菜单并重新读取选中状态。随后 `chat_send` 沿用该会话并省略 `model`，避免重复选择重置设置。旧版 MCP 需升级并重连；模型或 High 不可用、无法核验时明确报告，不静默降级。用户选择旧模型时，`extended_thinking:true` 仍兼容旧版 Extended thinking 开关，但不能把旧开关称为已核验 High。
+4. ChatGPT 未指定模型、思考强度或回答档位时，`chat_send` 在发送前选择并复核 GPT-6 + 高，失败则停止。指定模型或强度时在 `chat_send` 显式传入 `model` 或 `thinking_level`，未指定的另一项保留当前值。先核对实际工具声明；若不支持 `thinking_level`，说明需要升级并重连，不静默忽略。仅要求 Pro 档位时传 `answer_tier:"Pro"`，不传 `model`；不可将模型名称与档位混淆。遵守 MCP 当前平台规则，不调用 Pro 身份探针。
+5. 用户指定 Gemini 时遵从其模型和强度；若要求 4 Argon + High，先核实列表并调用 `chat_select_model`，核验模型与 High 后发送。不可用或无法核验时停止，不静默降级。随后 `chat_send` 沿用该会话并省略 `model`，避免重复选择重置设置。
 
 ## 提交一次，等待完整结果
 

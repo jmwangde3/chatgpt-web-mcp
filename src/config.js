@@ -137,6 +137,8 @@ export const PRO_PROBE_RECHECK_AFTER_CLOSE_MS = Number(
 
 export const DEFAULT_ANSWER_TIER =
   process.env.CHATGPT_WEB_DEFAULT_TIER || "极高";
+export const DEFAULT_CHAT_MODEL = "GPT-6";
+export const DEFAULT_CHAT_THINKING_LEVEL = "高";
 
 export const PRO_ANSWER_TIER =
   process.env.CHATGPT_WEB_PRO_TIER || "Pro";
