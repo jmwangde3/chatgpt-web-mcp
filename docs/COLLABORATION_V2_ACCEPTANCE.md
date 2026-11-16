@@ -2,7 +2,7 @@
 
 日期：2026-11-17。审查分支：`review/chatgpt-collaboration-v2`；[草稿PR #1](https://github.com/jmwangde3/chatgpt-web-mcp/pull/1)。
 
-**WORK PACKAGE A：PASS（工程与离线验收）。WORK PACKAGE B：CONDITIONAL（核心真实双模式已通过，部分故障边界仅模拟）。OVERALL：CONDITIONAL。**
+**WORK PACKAGE A：PASS（工程与离线验收）。WORK PACKAGE B：CONDITIONAL（核心真实双模式、功能分批及部分Git边界已验，仍有外部故障边界待验）。OVERALL：CONDITIONAL。**
 
 代码已可审核；不把决策模拟当成全部真实环境测试。未合并、打Tag、发布版本或替换运行中的服务代码；全局MCP连接仍保持原full模式。
 
@@ -16,7 +16,7 @@
 
 | 文件 | 实际变化与原因 | 兼容影响 |
 |---|---|---|
-|src/browser.js、src/shared/send-guard.js|文档初始化时安装一次性发送保护器；点击前经CDP核对首个window捕获处理器的精确身份；事件内检查原始全文、页面URL/HTTPS/origin、绑定节点、可写/可见/启用、同form与上传状态|保留Playwright可信点击；不使用Enter、改选择器重发或DOM原生click兜底。旧页面未初始化或顺序无法证明即拒绝|
+|src/browser.js、src/shared/send-guard.js|文档初始化时安装一次性发送保护器；点击前经CDP核对首个window捕获处理器的精确身份；事件内检查原始全文、页面URL/HTTPS/origin、绑定节点、可写/可见/启用、同form与上传状态；按已观察到的PRE/CODE结构保守还原围栏身份候选|保留Playwright可信点击；不使用Enter、改选择器重发或DOM原生click兜底。旧页面未初始化或顺序无法证明即拒绝；matchesUserPrompt/textHash全文匹配规则不改|
 |src/core/tasks.js|只有SEND_NOT_ATTEMPTED与sendOutcome=not_attempted双标记才释放为failed|点击结果不明、断线、身份不匹配仍uncertain；原消息数量、identityCandidates、matchesUserPrompt及会话核验保留|
 |src/shared/windows-security.js、src/shared/persistent-browser.js|校验PID/创建时间/程序/Profile/调试参数/端口监听归属；处理经过验证的Chrome直接子进程接管；null signal归一；路径、reparse、ACL检查|旧状态验证后升级；不删除旧状态或关闭未知进程，不递归修复现有Profile权限。只有本次新建目录初始化私有ACL|
 |src/core/diagnostics.js、src/providers/adapters.js|增加不创建目录、不改变ACL的本地安全诊断与配置传递|不输出完整进程命令行、凭据、对话内容；不能确认时fail-closed|
@@ -33,10 +33,12 @@
 |---|---|---|
 |P0原子发送|PASS（离线）|19项真实Chromium专项；正常可信点击一次、全文差异、失效节点/页面/上传状态、模糊结果、前置捕获处理器及未初始化页面拒绝|
 |P1 Windows安全|PASS（工程/离线）|22项进程查询与迁移测试、32项身份/权限规则测试、5项真实Windows目录/ACL专项、真实临时Chrome连接/断开/重连/关闭|
-|P1双平台浏览器CI|PASS|[20069e5的CI43915197406](https://github.com/jmwangde3/chatgpt-web-mcp/actions/runs/43915197406)四任务全绿|
+|P1双平台浏览器CI|PASS（已记录版本）|[20069e5的CI43915197406](https://github.com/jmwangde3/chatgpt-web-mcp/actions/runs/43915197406)四任务全绿；此历史结果不证明围栏补充及后续新提交已在云端通过|
 |P2 full/unified|PASS|真实stdio MCP的full/default/unified/invalid启动测试；63个基线工具及全部定义哈希一致；unified仅17个既有chat_*；两种smoke通过|
 
 最新本地完整单元：**221/221**；原完整浏览器106项在云端两平台通过，并另行执行19项发送与5项Windows专项。最新smoke与pack dry-run通过，打包54文件、155.6kB；git diff --check通过。
+
+Local分批的真实页面将两个Python围栏渲染为PRE/CODE，原inline候选不足以确认全文身份，首批任务因此进入uncertain。`src/browser.js`仅补充该已观察结构的保守围栏还原：最后用户消息、明确PRE及CODE复制标志、可见且无嵌套、最多32块/100k字符、单个完整候选；`matchesUserPrompt`和`textHash`全文匹配规则未改，没有截断或模糊匹配兜底。按主Agent本轮执行记录，围栏新专项18项，合并旧30项为**48/48**；全部补充专项为**18＋19＋5＝42/42**。本地单元仍**221/221**；full/unified smoke分别63/17工具，退出码均0。上述新增本地结果不等于云端新提交已经绿。
 
 首轮Windows CI发现旧附件测试的250ms成功等待在runner负载下不稳定：仅将成功等待预算提高至3000ms，负向断言仍用250ms，没有跳过测试。P0复核曾发现晚注册保护器可能晚于应用同层捕获器；已改为文档初始化注册及CDP顺序证明，新增复现回归通过。
 
@@ -79,6 +81,12 @@
 - 新建仅含合成probe.py的专用私有fixture，Codex核实isPrivate=true。网页通过已有GitHub集成读取完整SHA`471ee9696cf7a885db8d67e17f218a3114884b15`，返回未在提示词披露的随机标记和正确blob SHA。没有改变授权或公开私库。见[私库证据](evidence/private-read-v2.md)。这只证明该账号对该测试仓库的实际访问，不代表所有私库均可访问。
 - GitHub初轮用短观察窗口实际得到running/timed_out，再继续读取原task_id直到completed；同一轮仅发送一次，没有换request_id重发。两个模式各保持同一会话两轮，独立任务使用不同session。
 
+### Local真实两批：PASS（本合成功能范围）
+
+主Agent按每批10,000字符预算发送4份完整合成源码，源码合计15,198字符；两批提示词分别8,028和8,185字符。首批出现SEND_UNCONFIRMED/uncertain后，只恢复读取原task_id，不重发、不覆盖任务日志，最终completed；网页首批明确INCOMPLETE，等待必要文件齐备。次批随后completed并返回静态功能审查PASS。
+
+网页正确回显4份声明SHA-256、两个目录版本`batch-a-8658dc58b487`和`batch-b-69f2aa76a991`，跨文件数据为4083＋7358＝11441。网页明确没有独立计算哈希或执行测试；3/3、退出码0是本机测试记录。该结果覆盖多文件依赖、顺序分批和原任务恢复，不是模型上下文极限压力测试，也不代表生产验收。见[完整两批响应及证据](evidence/local-batches-live-v2.json)。
+
 ## 4. 场景覆盖：真实证据与决策模拟分列
 
 独立Sol low Agent按两个Skill执行25项离线决策场景，主Agent核对路由、推送门禁和停止条件，25/25决策符合预期；明确simulation=true，**不是25项真实外部故障测试PASS**。见[场景记录](evidence/scenario-agent-v2.json)。
@@ -90,24 +98,26 @@
 |G03|私库无授权回退|403回退决策模拟通过；未撤销账号权限制造真实拒绝|
 |G04|无remote|无Git Local双轮PASS；auto路由为决策模拟|
 |G05|未推送修改|真实安全提交、非默认分支推送、远端SHA核对、网页实读|
-|G06|推送失败|阻塞及不假成功为决策模拟，未真实注入远端故障|
-|G07|错误SHA|拒绝审查为决策模拟；真实正向SHA与新标记核对通过|
-|G08|main发生其他提交|固定SHA策略模拟；未改默认分支制造该场景|
-|G09|敏感内容|阻止提交/外发为决策模拟；没有上传真实密钥做测试|
+|G06|推送失败|真实clone公开合成fixture，新review/failure分支提交后由客户端pre-push hook拒绝；仅一次push、退出1，远端该分支前后均不存在，不重试、不发网页复审。不是服务端权限故障|
+|G07|旧SHA回放|读取真实github-round1.md的744df28e…，对比远端review/average-v2的76eb2dc6…及实际Diff，Agent按Skill拒绝旧结论为INVALID_REVIEW；无推送、无代码修复|
+|G08|main发生其他提交|独立local bare fixture真实推进main；固定旧SHA文件内容前后相同。属于真实Git组件测试，不是GitHub完整场景；未改GitHub默认分支|
+|G09|敏感候选门禁|自建临时clone中检查含合成.env的候选集合，仅含SYNTHETIC_TEST_VALUE_NOT_A_CREDENTIAL；Agent在暂存/提交/推送前阻断，HEAD和远端均未变。是Agent执行Skill门禁，不是已有scanner；无真实密钥|
 |G10|强制Local|实际无Git本地模式未push，完成两轮|
-|G11|强制GitHub不可访问|明确阻塞、不偷偷回退为决策模拟|
+|G11|强制GitHub不可访问|阻塞决策模拟通过；无效SHA真实任务仍超时，等待用户是否延长，保持待验，不判PASS|
 |G12|新提交复审|实际新SHA及未披露标记实读PASS|
 |G13|修复后重核代码|两模式实际复现、修复、测试、新版本VERIFIED|
-|G14|必要文件无法读|INCOMPLETE及覆盖缺口为决策模拟|
+|G14|必要文件无法读|INCOMPLETE决策模拟通过；缺文件真实任务仍超时，等待用户是否延长，保持待验，不判PASS|
 |L01|普通本地项目|实际两文件证据与两轮审查PASS|
 |L02|单文件变化|最小必要调用上下文选择为决策模拟|
-|L03|多个相关文件|实际实现与直接调用测试两个相关文件；复杂调用链未单独实测|
+|L03|多个相关文件|真实两批4文件、15,198源码字符；四声明哈希及两目录版本回显正确，跨文件4083＋7358＝11441，静态功能审查PASS；网页未独立算哈希或执行测试|
 |L04|第二轮修改|实际重新读文件/行号/Diff/哈希/测试PASS|
 |L05|旧代码已变化|实际第二轮新证据与哈希回显一致，未使用旧版本|
 |L06|没有Git|实际无Git两轮PASS|
 |L07|不允许GitHub push|实际Local不push，必要代码经授权发送ChatGPT；完全禁止外发另有停止模拟|
-|L08|观察超时恢复|共享MCP在GitHub流程真实原task恢复；Local对应决策另有模拟|
-|L09|大证据分批|依赖完整覆盖与分批顺序为决策模拟，未做真实大包压力测试|
+|L08|观察超时恢复|除GitHub原task恢复外，Local首批uncertain后真实读取同一原task至completed，无重发；第二批completed PASS|
+|L09|大证据分批|真实两批顺序覆盖4文件；每批预算10,000字符，提示词8,028/8,185字符；功能分批PASS，不是模型极限压力测试|
+
+G06–G09的退出码、远端SHA/无分支证据及动作见[真实Git边界记录](evidence/git-boundaries-live-v2.json)；L03/L08/L09见[Local真实分批记录](evidence/local-batches-live-v2.json)。这些局部验收不扩大为全部GitHub故障场景PASS。
 
 ## 5. Token与效率对照
 
@@ -140,10 +150,12 @@
 
 ## 6. 最终结论与遗留项
 
-- **A：PASS**。四项工程改造及双平台离线CI通过；221项单元、真实浏览器专项、两模式smoke、pack及diff检查通过。新源码仍待审核，未覆盖运行服务。
-- **B：CONDITIONAL**。公开GitHub双轮、Local双轮、私库已授权实读、版本绑定、原任务恢复和Skill分发已有真实证据；部分失败/权限/大证据场景仅有独立Agent决策模拟。
+- **A：PASS（工程与离线范围）**。四项工程改造及已记录版本的双平台离线CI通过；221项单元、围栏相关合并48/48与补充专项42/42、两模式smoke通过；历史pack及diff检查通过。围栏补充尚无云端新提交绿灯结论；新源码仍待审核，未覆盖运行服务。
+- **B：CONDITIONAL**。公开GitHub双轮、Local双轮、私库已授权实读、版本绑定、原任务恢复、两批4文件功能验收和Skill分发已有真实证据；G06–G09按各自客户端/Agent门禁或组件范围通过，不扩大为全部外部故障验收。
 - **整体：CONDITIONAL**。可以受监督试用和代码审核；尚不能称为所有场景均完成真实外部集成验收。
 
-剩余：私库无授权的真实拒绝、真实推送失败、错SHA/缺文件的外部故障注入、大证据分批压力场景、精确Codex额外Token计量。没有为了测试而撤销权限、公开私库、上传真实敏感内容或改默认分支。账号当前已登录，**不需要重复登录**。
+剩余：G03真实403/私库无授权拒绝仍未实测；G11无效SHA与G14缺文件真实任务仍超时，等待用户是否延长，保持待验。服务端推送权限拒绝不在本次客户端pre-push证据内。模型极限压力及精确账单Token仍未实测；本次10,000字符预算分批不能替代这些证据。围栏补充及后续新提交的云端CI状态未据此核实。没有为了测试而撤销权限、公开私库、上传真实敏感内容或改GitHub默认分支。账号当前已登录，**不需要重复登录**。
+
+Git边界临时目录的cleanup原文为`not performed; only self-created temporary workspace retained`：**未清理，仍保留**，不得写成已清理。
 
 保留公开/私有合成fixture仓库供追溯，不删除用户资源。Skills Manager远端目前跟踪此审查分支，合并后再按维护策略迁移；中心源仍唯一编辑。后续若要部署新服务，应走现有安装/更新流程，本次没有擅自切换全局配置。

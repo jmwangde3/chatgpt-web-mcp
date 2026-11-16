@@ -143,6 +143,30 @@ export function readUserMessageIdentityDOM(element, selectors) {
     return node.getClientRects().length === 1 && style.visibility === 'visible' && style.display !== 'none' && Number(style.opacity) !== 0;
   });
   const plainFallback = element.innerText || element.textContent || '';
+  // Reconstruct one canonical fenced-code candidate only from explicit user
+  // code-block DOM. The full existing hash comparison remains unchanged.
+  const blockNodes = wrappersValid ? [...leaf.childNodes] : [];
+  const blocks = blockNodes.filter(node => node.nodeType === Node.ELEMENT_NODE);
+  const fenced = !rich && wrappersValid && plainFallback.length <= 100000 && blocks.length > 0 && blocks.length <= 32 &&
+    blockNodes.every(node => node.nodeType === Node.TEXT_NODE || (node.nodeType === Node.ELEMENT_NODE && node.tagName === 'PRE')) &&
+    blocks.every(pre => {
+      const code = pre.firstElementChild;
+      return pre.getAttribute('data-markdown-copy') === 'code-block' && visible(pre) &&
+        pre.children.length === 1 && code?.tagName === 'CODE' && !code.children.length && visible(code) &&
+        [...pre.childNodes].every(node => node === code || (node.nodeType === Node.TEXT_NODE && !node.textContent.trim())) &&
+        [...code.childNodes].every(node => node.nodeType === Node.TEXT_NODE) &&
+        code.getAttribute('data-markdown-copy-content') === 'true' &&
+        /^[A-Za-z0-9_+-]{1,32}$/.test(code.getAttribute('data-language') || '') &&
+        !!code.textContent && !code.textContent.includes('```');
+    });
+  if (fenced) {
+    const copy = leaf.cloneNode(true);
+    for (const pre of copy.querySelectorAll('pre')) {
+      const code = pre.firstElementChild;
+      pre.replaceWith(document.createTextNode('```' + code.getAttribute('data-language') + '\n' + code.textContent + '\n```'));
+    }
+    return {count:nodes.length, isLast:nodes.at(-1) === element, lastId, lastText:plainFallback, identityCandidates:[copy.textContent || '']};
+  }
   if (!structural && !flat) return {count:nodes.length, isLast:nodes.at(-1) === element, lastId, lastText:plainFallback, identityCandidates:[]};
   const copies = structural ? paragraphs.map(p => p.cloneNode(true)) : [leaf.cloneNode(true)];
   for (const copy of copies) {

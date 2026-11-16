@@ -1,0 +1,468 @@
+{
+  "schema_version": 1,
+  "executed_at_utc": "2026-11-16T18:45:09.436773+00:00",
+  "scope": "G06-G09 real Git operations and Agent-enforced Skill gates; no Web review",
+  "fixture_repository": "https://github.com/jmwangde3/chatgpt-collaboration-review-fixture.git",
+  "skill_sources": [
+    "skills/codex-chatgpt-review-github/SKILL.md",
+    "skills/codex-chatgpt-review-github/references/github-review-workflow.md",
+    "skills/codex-chatgpt-review-github/references/code-review-protocol.md"
+  ],
+  "temporary_workspace_id": "git-boundaries-v2-rebo0xcz",
+  "cleanup": "not performed; only self-created temporary workspace retained",
+  "cases": [
+    {
+      "id": "G06",
+      "simulation": false,
+      "result": "PASS",
+      "workflow_status": "BLOCKED",
+      "base_sha": "e86fd15c9f455937b4a0ae2db617befb21970484",
+      "local_commit_sha": "db9348ce75d035ef0212b7d85da0417834208abd",
+      "remote_default_evidence": "ref: refs/heads/main\tHEAD\ne86fd15c9f455937b4a0ae2db617befb21970484\tHEAD",
+      "branch": "review/failure-811116467120",
+      "remote_before": {
+        "exit_code": 2,
+        "ref": "refs/heads/review/failure-811116467120",
+        "exists": false,
+        "sha": null,
+        "raw_ref_evidence": ""
+      },
+      "remote_after": {
+        "exit_code": 2,
+        "ref": "refs/heads/review/failure-811116467120",
+        "exists": false,
+        "sha": null,
+        "raw_ref_evidence": ""
+      },
+      "push_exit_code": 1,
+      "push_attempts": 1,
+      "hook_exit_code": 1,
+      "hook_rejection_observed": true,
+      "web_review_submitted": false,
+      "retry": false,
+      "actions": [
+        "Stopped after failed push; no claim of synchronization"
+      ],
+      "limitation": "Client pre-push hook failure; does not test server permission rejection"
+    },
+    {
+      "id": "G07",
+      "simulation": false,
+      "result": "PASS",
+      "workflow_status": "INVALID_REVIEW",
+      "source_document": "docs/evidence/github-round1.md",
+      "source_document_sha256": "72d8a92d22837870cf0806eac6d71feb80752f0d8633595327728e830ffb2b63",
+      "replayed_reviewed_sha": "744df28e0f2f65823f81717535ad3db4bdf46e64",
+      "required_current_sha": "76eb2dc6b775bae3d1c73a58c0910a68498642d7",
+      "version_diff": "diff --git a/average.py b/average.py\nindex b975452..cd67318 100644\n--- a/average.py\n+++ b/average.py\n@@ -1,3 +1,4 @@\n+# review-version: fixture-9f5ea50301574164\n def average(scores):\n     \"\"\"Return zero for empty scores; otherwise their arithmetic mean.\"\"\"\n-    return 0 if not scores else sum(scores) // len(scores)\n+    return 0 if not scores else sum(scores) / len(scores)\ndiff --git a/test_average.py b/test_average.py\nindex 6cfc8f8..71d1307 100644\n--- a/test_average.py\n+++ b/test_average.py\n@@ -7,3 +7,12 @@ class AverageTests(unittest.TestCase):\n \n     def test_divisible(self):\n         self.assertEqual(average([2, 4]), 3)\n+\n+    def test_non_divisible(self):\n+        self.assertEqual(average([1, 2]), 1.5)\n+\n+    def test_negative_values(self):\n+        self.assertEqual(average([-1, 0]), -0.5)\n+\n+    def test_float_values(self):\n+        self.assertEqual(average([1.5, 2.0]), 1.75)",
+      "remote_before": {
+        "exit_code": 0,
+        "ref": "refs/heads/review/average-v2",
+        "exists": true,
+        "sha": "76eb2dc6b775bae3d1c73a58c0910a68498642d7",
+        "raw_ref_evidence": "76eb2dc6b775bae3d1c73a58c0910a68498642d7\trefs/heads/review/average-v2"
+      },
+      "remote_after": {
+        "exit_code": 0,
+        "ref": "refs/heads/review/average-v2",
+        "exists": true,
+        "sha": "76eb2dc6b775bae3d1c73a58c0910a68498642d7",
+        "raw_ref_evidence": "76eb2dc6b775bae3d1c73a58c0910a68498642d7\trefs/heads/review/average-v2"
+      },
+      "agent_decision": "Rejected actual old review: reviewed SHA does not match required current SHA; old findings are not current verification",
+      "rule": "code-review-protocol.md: fixed SHA mismatch or old evidence invalidates the round",
+      "push_attempts": 0,
+      "code_fixes": 0,
+      "web_review_submitted": false
+    },
+    {
+      "id": "G08",
+      "simulation": false,
+      "result": "PASS",
+      "test_level": "Real Git component test using independent local bare fixture; NOT complete GitHub scenario or Web review",
+      "pinned_sha": "e8549e1fa2d924ec309f366a8f9b41f478dd568c",
+      "new_main_sha": "2992317d91081a129f1a6a563eeddee5cd9cbad5",
+      "remote_before": {
+        "exit_code": 0,
+        "ref": "refs/heads/main",
+        "exists": true,
+        "sha": "e8549e1fa2d924ec309f366a8f9b41f478dd568c",
+        "raw_ref_evidence": "e8549e1fa2d924ec309f366a8f9b41f478dd568c\trefs/heads/main"
+      },
+      "remote_after": {
+        "exit_code": 0,
+        "ref": "refs/heads/main",
+        "exists": true,
+        "sha": "2992317d91081a129f1a6a563eeddee5cd9cbad5",
+        "raw_ref_evidence": "2992317d91081a129f1a6a563eeddee5cd9cbad5\trefs/heads/main"
+      },
+      "pinned_content_before": "fixed version one",
+      "pinned_content_after": "fixed version one",
+      "new_main_content": "main version two",
+      "pinned_content_sha256": "4fc41933574a36f434ed563a511715c1f0e1ce8c79bcc61a44b61084439cee16",
+      "agent_decision": "Keep fixed SHA evidence scope; no claim of integration with latest main",
+      "github_default_branch_modified": false
+    },
+    {
+      "id": "G09",
+      "simulation": false,
+      "result": "PASS",
+      "workflow_status": "BLOCKED_SENSITIVE_CONTENT",
+      "gate_implementation": "Agent executed submission gate from Skill; no existing content scanner implementation is claimed",
+      "candidate_files": [
+        ".env",
+        "synthetic-safe-candidate.txt"
+      ],
+      "inspected_files": [
+        {
+          "path": ".env",
+          "content_read": true,
+          "sha256": "8128e42762b2519efb5ec088f6e92b6bfe7736dee9a10eb52743bf5abb2a7790",
+          "synthetic_only": true
+        },
+        {
+          "path": "synthetic-safe-candidate.txt",
+          "content_read": true,
+          "sha256": "14e093d148f0630765390ff6b8d62df55d457aa5a7625d08dd54ed35cd745d47",
+          "synthetic_only": true
+        }
+      ],
+      "candidate_status": "?? .env\n?? synthetic-safe-candidate.txt",
+      "trigger": ".env candidate; synthetic marker only",
+      "agent_decision": "Blocked whole candidate set before staging, commit, push or external review; content read locally without printing values",
+      "head_before": "e86fd15c9f455937b4a0ae2db617befb21970484",
+      "head_after": "e86fd15c9f455937b4a0ae2db617befb21970484",
+      "remote_before": {
+        "exit_code": 0,
+        "ref": "refs/heads/review/average-v2",
+        "exists": true,
+        "sha": "76eb2dc6b775bae3d1c73a58c0910a68498642d7",
+        "raw_ref_evidence": "76eb2dc6b775bae3d1c73a58c0910a68498642d7\trefs/heads/review/average-v2"
+      },
+      "remote_after": {
+        "exit_code": 0,
+        "ref": "refs/heads/review/average-v2",
+        "exists": true,
+        "sha": "76eb2dc6b775bae3d1c73a58c0910a68498642d7",
+        "raw_ref_evidence": "76eb2dc6b775bae3d1c73a58c0910a68498642d7\trefs/heads/review/average-v2"
+      },
+      "staged_files": [],
+      "stage_attempts": 0,
+      "commit_attempts": 0,
+      "push_attempts": 0,
+      "web_review_submitted": false
+    }
+  ],
+  "commands": [
+    {
+      "action": "G06 clone public synthetic fixture",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 71,
+      "stdout_empty": true
+    },
+    {
+      "action": "G06 inspect local status",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "stdout_empty": true
+    },
+    {
+      "action": "G06 inspect branch",
+      "exit_code": 0,
+      "stdout_bytes": 5,
+      "stderr_bytes": 0
+    },
+    {
+      "action": "G06 initial HEAD",
+      "exit_code": 0,
+      "stdout_bytes": 41,
+      "stderr_bytes": 0,
+      "ref_output": "e86fd15c9f455937b4a0ae2db617befb21970484"
+    },
+    {
+      "action": "G06 inspect remote default branch",
+      "exit_code": 0,
+      "stdout_bytes": 72,
+      "stderr_bytes": 0
+    },
+    {
+      "action": "G06 remote branch before",
+      "exit_code": 2,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "stdout_empty": true
+    },
+    {
+      "action": "G06 create new non-default branch",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 55,
+      "stdout_empty": true
+    },
+    {
+      "action": "G06 inspect candidate diff",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "stdout_empty": true
+    },
+    {
+      "action": "G06 explicit stage",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "stdout_empty": true
+    },
+    {
+      "action": "G06 inspect staged diff",
+      "exit_code": 0,
+      "stdout_bytes": 223,
+      "stderr_bytes": 0
+    },
+    {
+      "action": "G06 staged whitespace check",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "stdout_empty": true
+    },
+    {
+      "action": "G06 synthetic fixture commit",
+      "exit_code": 0,
+      "stdout_bytes": 156,
+      "stderr_bytes": 0
+    },
+    {
+      "action": "G06 committed HEAD",
+      "exit_code": 0,
+      "stdout_bytes": 41,
+      "stderr_bytes": 0,
+      "ref_output": "db9348ce75d035ef0212b7d85da0417834208abd"
+    },
+    {
+      "action": "G06 configure clone-only hook directory",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "stdout_empty": true
+    },
+    {
+      "action": "G06 single real push attempt",
+      "exit_code": 1,
+      "stdout_bytes": 0,
+      "stderr_bytes": 133,
+      "stdout_empty": true,
+      "hook_marker": "SYNTHETIC_PRE_PUSH_REJECT"
+    },
+    {
+      "action": "G06 remote branch after",
+      "exit_code": 2,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "stdout_empty": true
+    },
+    {
+      "action": "G07 current review branch",
+      "exit_code": 0,
+      "stdout_bytes": 70,
+      "stderr_bytes": 0,
+      "ref_output": "76eb2dc6b775bae3d1c73a58c0910a68498642d7\trefs/heads/review/average-v2"
+    },
+    {
+      "action": "G07 fetch current review branch read-only",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 124,
+      "stdout_empty": true
+    },
+    {
+      "action": "G07 compare actual old and new versions",
+      "exit_code": 0,
+      "stdout_bytes": 895,
+      "stderr_bytes": 0
+    },
+    {
+      "action": "G07 review branch after refusal",
+      "exit_code": 0,
+      "stdout_bytes": 70,
+      "stderr_bytes": 0,
+      "ref_output": "76eb2dc6b775bae3d1c73a58c0910a68498642d7\trefs/heads/review/average-v2"
+    },
+    {
+      "action": "G08 initialize independent local bare fixture",
+      "exit_code": 0,
+      "stdout_bytes": 97,
+      "stderr_bytes": 0
+    },
+    {
+      "action": "G08 initialize local work fixture",
+      "exit_code": 0,
+      "stdout_bytes": 98,
+      "stderr_bytes": 0
+    },
+    {
+      "action": "G08 attach local bare origin",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "stdout_empty": true
+    },
+    {
+      "action": "G08 stage first local fixture",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "stdout_empty": true
+    },
+    {
+      "action": "G08 commit old local version",
+      "exit_code": 0,
+      "stdout_bytes": 109,
+      "stderr_bytes": 0
+    },
+    {
+      "action": "G08 pinned old SHA",
+      "exit_code": 0,
+      "stdout_bytes": 41,
+      "stderr_bytes": 0,
+      "ref_output": "e8549e1fa2d924ec309f366a8f9b41f478dd568c"
+    },
+    {
+      "action": "G08 publish initial local main",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 97,
+      "stdout_empty": true
+    },
+    {
+      "action": "G08 local main before advance",
+      "exit_code": 0,
+      "stdout_bytes": 57,
+      "stderr_bytes": 0,
+      "ref_output": "e8549e1fa2d924ec309f366a8f9b41f478dd568c\trefs/heads/main"
+    },
+    {
+      "action": "G08 read pinned file before main advance",
+      "exit_code": 0,
+      "stdout_bytes": 18,
+      "stderr_bytes": 0
+    },
+    {
+      "action": "G08 stage changed local main",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "stdout_empty": true
+    },
+    {
+      "action": "G08 commit new local main",
+      "exit_code": 0,
+      "stdout_bytes": 90,
+      "stderr_bytes": 0
+    },
+    {
+      "action": "G08 new local main SHA",
+      "exit_code": 0,
+      "stdout_bytes": 41,
+      "stderr_bytes": 0,
+      "ref_output": "2992317d91081a129f1a6a563eeddee5cd9cbad5"
+    },
+    {
+      "action": "G08 advance main ONLY on local bare fixture",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 97,
+      "stdout_empty": true
+    },
+    {
+      "action": "G08 local main after advance",
+      "exit_code": 0,
+      "stdout_bytes": 57,
+      "stderr_bytes": 0,
+      "ref_output": "2992317d91081a129f1a6a563eeddee5cd9cbad5\trefs/heads/main"
+    },
+    {
+      "action": "G08 read same pinned file after main advance",
+      "exit_code": 0,
+      "stdout_bytes": 18,
+      "stderr_bytes": 0
+    },
+    {
+      "action": "G08 read new main file",
+      "exit_code": 0,
+      "stdout_bytes": 17,
+      "stderr_bytes": 0
+    },
+    {
+      "action": "G09 create own temporary candidate clone",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 74,
+      "stdout_empty": true
+    },
+    {
+      "action": "G09 HEAD before candidate creation",
+      "exit_code": 0,
+      "stdout_bytes": 41,
+      "stderr_bytes": 0,
+      "ref_output": "e86fd15c9f455937b4a0ae2db617befb21970484"
+    },
+    {
+      "action": "G09 remote review branch before",
+      "exit_code": 0,
+      "stdout_bytes": 70,
+      "stderr_bytes": 0,
+      "ref_output": "76eb2dc6b775bae3d1c73a58c0910a68498642d7\trefs/heads/review/average-v2"
+    },
+    {
+      "action": "G09 inspect all untracked candidates",
+      "exit_code": 0,
+      "stdout_bytes": 40,
+      "stderr_bytes": 0
+    },
+    {
+      "action": "G09 inspect tracked diff",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "stdout_empty": true
+    },
+    {
+      "action": "G09 inspect current index",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "stdout_empty": true
+    },
+    {
+      "action": "G09 HEAD after Agent blocked staging",
+      "exit_code": 0,
+      "stdout_bytes": 41,
+      "stderr_bytes": 0,
+      "ref_output": "e86fd15c9f455937b4a0ae2db617befb21970484"
+    },
+    {
+      "action": "G09 prove empty staged set",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "stdout_empty": true
+    },
+    {
+      "action": "G09 remote review branch after",
+      "exit_code": 0,
+      "stdout_bytes": 70,
+      "stderr_bytes": 0,
+      "ref_output": "76eb2dc6b775bae3d1c73a58c0910a68498642d7\trefs/heads/review/average-v2"
+    }
+  ],
+  "overall": "PASS",
+  "limitations": [
+    "Gates are Agent actions following repository Skill, not an implemented execution engine or scanner.",
+    "No ChatGPT Web review was submitted.",
+    "No GitHub settings, visibility, default branches, global identity or project code changed.",
+    "Local fixture-only tests do not establish GitHub end-to-end review PASS."
+  ]
+}
