@@ -1,143 +1,149 @@
-# Collaboration V2 acceptance log
+# ChatGPT Web × Codex 协作体系 V2.0 · 实施与验收报告
 
-当前阶段结论：A 工程离线验收 PASS；B 真实网页闭环待登录，CONDITIONAL；整体暂为 CONDITIONAL。审查分支已推送，未合并、发布或部署；包版本与元数据未变。
+日期：2026-11-17。审查分支：`review/chatgpt-collaboration-v2`；[草稿PR #1](https://github.com/jmwangde3/chatgpt-web-mcp/pull/1)。
 
-Baseline: main `65c130ef9fb405dd12a13d6a0af9f8b225ece2c9`, Node 22.14.0/npm 10.9.2, clean checkout. Original baseline: unit 152/152, browser 106/106, smoke 63 tools, pack dry-run passed. Worktree dependencies installed with npm ci.
+**WORK PACKAGE A：PASS（工程与离线验收）。WORK PACKAGE B：CONDITIONAL（核心真实双模式已通过，部分故障边界仅模拟）。OVERALL：CONDITIONAL。**
 
-## A1 atomic send
+代码已可审核；不把决策模拟当成全部真实环境测试。未合并、打Tag、发布版本或替换运行中的服务代码；全局MCP连接仍保持原full模式。
 
-- The guard is installed at document initialization, before application listeners. Before clicking, CDP verifies the first window click-capture listener is this exact guard. Existing uninitialized pages must refresh before preparing a draft; unknown earlier handlers cause a fail-closed refusal. The final synchronous guard checks the pinned nodes, exact raw draft, HTTPS configured origin and full conversation URL, writable composer, same form, visible/enabled send control, and upload indicators before application document listeners handle the trusted click.
-- Uses the existing Playwright trusted click; no Enter, alternate selector resend or automatic retry. Ambiguous click/transport errors remain uncertain. Only explicit `SEND_NOT_ATTEMPTED` plus `sendOutcome=not_attempted` releases the reservation.
-- Existing message-count, prompt identity and conversation acknowledgement checks remain intact.
-- Local validation: original browser suite 106/106; added guard browser cases16/16; added durable outcome tests12/12 for both providers. Unit suite164/164 after A1.
+## 1. 基线与修改范围
 
-## A2 Windows ownership and profile safety
+- 修改前HEAD：`65c130ef9fb405dd12a13d6a0af9f8b225ece2c9`，原main工作区干净。
+- 完整生产改动HEAD：`20069e5`；后续提交主要补充Skill与测试证据。实际提交后HEAD见PR分支。
+- 环境：Node22.14.0、npm10.9.2、包版本0.7.11；未改package.json版本、作者、仓库等元数据。
+- 原基线：单元152/152、离线浏览器106/106、smoke63工具、pack dry-run通过。隔离副本执行npm ci成功。
+- 全部源码改动在隔离工作副本完成，原服务仓库源码未覆盖；没有reset --hard、force push、自动stash或默认分支推送。
 
-- Constant PowerShell5.1 query scripts receive JSON through UTF-8 stdin; child timeout/output bounds; no interpolated paths or raw process command lines in diagnostics/state. Child-only system module path avoids PowerShell7 inheritance issues.
-- Validates PID, creation time, executable, command-line profile/port/address and TCP listener PID. Legacy identity is enriched only after live verification. Unverifiable ownership prevents connection/termination and preserves saved state.
-- Refuses links/reparse points, repository-contained profiles and foreign write ACLs. Initializes only directories just created by this call; does not recursively repair existing profiles. Read-only doctor never creates paths or changes ACLs.
-- Local validation: identity/ACL unit32/32; query/legacy/unknown-owner tests7/7; real Windows security fixtures5/5 (junction, non-directory, unsafe ACL unchanged, query failure preservation, Unicode/space paths); session browser7/7; Gemini persistent lifecycle1/1. Unit202/202 before last unknown-owner case was added.
-- Design reference (no Python code transplanted): [MCP-CodexGPT platform security](https://github.com/MosMotov/MCP-CodexGPT/blob/6b088fb15f1e9c3728cca2b642ab7b0316674237/platform_security.py).
+| 文件 | 实际变化与原因 | 兼容影响 |
+|---|---|---|
+|src/browser.js、src/shared/send-guard.js|文档初始化时安装一次性发送保护器；点击前经CDP核对首个window捕获处理器的精确身份；事件内检查原始全文、页面URL/HTTPS/origin、绑定节点、可写/可见/启用、同form与上传状态|保留Playwright可信点击；不使用Enter、改选择器重发或DOM原生click兜底。旧页面未初始化或顺序无法证明即拒绝|
+|src/core/tasks.js|只有SEND_NOT_ATTEMPTED与sendOutcome=not_attempted双标记才释放为failed|点击结果不明、断线、身份不匹配仍uncertain；原消息数量、identityCandidates、matchesUserPrompt及会话核验保留|
+|src/shared/windows-security.js、src/shared/persistent-browser.js|校验PID/创建时间/程序/Profile/调试参数/端口监听归属；处理经过验证的Chrome直接子进程接管；null signal归一；路径、reparse、ACL检查|旧状态验证后升级；不删除旧状态或关闭未知进程，不递归修复现有Profile权限。只有本次新建目录初始化私有ACL|
+|src/core/diagnostics.js、src/providers/adapters.js|增加不创建目录、不改变ACL的本地安全诊断与配置传递|不输出完整进程命令行、凭据、对话内容；不能确认时fail-closed|
+|src/config.js、src/index.js|默认full，显式可选unified；instructions随实际注册工具生成|full63工具名称及Schema与改前精确基线一致；不删除旧工具、不改统一接口Schema|
+|scripts/smoke-mcp.js、scripts/measure-toolsets.js|两模式smoke、实际MCP定义体积测量；明确向测试子进程传递工具集环境|不启用真实浏览器；未新增Tokenizer或浏览器框架|
+|.github/workflows/ci.yml|扩展现有离线浏览器任务至Ubuntu/Windows；分别安装Chromium；保留所有原测试并增加专项|不登录AI、不读取真实Cookie/Profile、不要求本地VM|
+|test/、integration/|新增发送结果、处理器顺序、Windows身份/ACL/Unicode路径/旧状态等回归|Windows专属ACL测试在Windows真实执行，Linux保留其余浏览器与模拟安全测试|
+|README.md、README.en.md、.env.example|记录full/unified能力边界、默认配置、恢复约定|默认仍full，不修改用户全局配置|
+|skills/双Skill及共享协议|从Skills Manager中心源导出的审查/分发快照|没有第三Router，没有新发现入口，没有第二套MCP实现|
 
-## A3 CI
+## 2. 工作包A的实际验收
 
-Expanded existing offline-browser job to Ubuntu/Windows; retained all existing tests and added guard/security fixtures. Only local synthetic pages and ephemeral profiles are used. GitHub CI results pending first branch push. No local VM or real AI login required.
+| 项目 | 判定 | 证据 |
+|---|---|---|
+|P0原子发送|PASS（离线）|19项真实Chromium专项；正常可信点击一次、全文差异、失效节点/页面/上传状态、模糊结果、前置捕获处理器及未初始化页面拒绝|
+|P1 Windows安全|PASS（工程/离线）|22项进程查询与迁移测试、32项身份/权限规则测试、5项真实Windows目录/ACL专项、真实临时Chrome连接/断开/重连/关闭|
+|P1双平台浏览器CI|PASS|[20069e5的CI43915197406](https://github.com/jmwangde3/chatgpt-web-mcp/actions/runs/43915197406)四任务全绿|
+|P2 full/unified|PASS|真实stdio MCP的full/default/unified/invalid启动测试；63个基线工具及全部定义哈希一致；unified仅17个既有chat_*；两种smoke通过|
 
-## Remaining gates
+最新本地完整单元：**221/221**；原完整浏览器106项在云端两平台通过，并另行执行19项发送与5项Windows专项。最新smoke与pack dry-run通过，打包54文件、155.6kB；git diff --check通过。
 
-该段记录 dd5a345 时的阶段门槛；A4 与 Skill 文件/分发验证已在后文完成。当前剩余项为真实 GitHub/Local 双轮审查、实际权限/路由场景及工作流 Token 对照。云端 CI 必须实测，不能由本地结果推定。
-## First cloud run and review follow-up
+首轮Windows CI发现旧附件测试的250ms成功等待在runner负载下不稳定：仅将成功等待预算提高至3000ms，负向断言仍用250ms，没有跳过测试。P0复核曾发现晚注册保护器可能晚于应用同层捕获器；已改为文档初始化注册及CDP顺序证明，新增复现回归通过。
 
-Run [43906307224](https://github.com/jmwangde3/chatgpt-web-mcp/actions/runs/43906307224) at dd5a345: Ubuntu browser PASS; both platform unit/smoke/pack jobs PASS; Windows browser105/106, failed the pre-existing attachment fixture's250ms positive wait under runner load. The fixture's positive readiness budget will be increased while keeping negative assertions.
+### 已登录误报的实机诊断
 
-A review found that a late-installed window capture guard could run after a pre-existing same-target handler. This invalidated the old no-send proof; document-start installation plus runtime CDP listener-order proof replaces that approach. A new run is required. No production deployment has occurred.
+用户指出页面已经登录后，通过专用可见窗口确认了历史会话与输入框；没有再要求重复认证。当前实例的保存PID是已退出的启动父进程，CDP端口监听者和可见窗口则是它的直接子进程；同时旧登录入口启动时存在AbortSignal=null异常。
 
-Saved Windows process state that cannot be verified (including stale/dead PIDs) deliberately refuses connection and preserves the state/profile for explicit recovery. Live-process CDP disconnect/reconnect is tested. Automatic replacement after a browser crash is not claimed safe or verified.
+本次修复将null转为undefined，并只允许严格受限的PID迁移：旧记录尚无创建时间、实际进程为记录PID的直接子进程、创建时间位于启动记录的紧密窗口内，且程序/Profile/端口/loopback全部一致。已经有创建时间的记录不允许任意换PID。
 
-## A3 successful gate / A4 toolsets
+在只读验证真实进程身份后，取得操作锁、备份旧状态，仅补正当前实例身份元数据；没有修改Cookie、Profile内容、全局headless配置或原13项uncertain任务。现有MCP随后明确返回signedIn=true，真实审查得以继续。临时可见窗口复用了专用Profile。该证据定位本次接管问题，不能据此断言历史全部CONTROL_CONNECT_TIMEOUT都同源。
 
-Run [43908050033](https://github.com/jmwangde3/chatgpt-web-mcp/actions/runs/43908050033) at 8c8a7c7: all four Ubuntu/Windows unit+browser jobs SUCCESS. A4 production changes started after this gate.
+## 3. 工作包B：Skill与实际工作流
 
-- Default `full` preserves63 baseline tool names and exact tool-definition hashes; `unified` exposes only the17 existing unified tools with unchanged schemas. Invalid configuration fails startup. Instructions match the actual registration.
-- Actual stdio MCP tools/list tests passed in full, unset/default, unified, and invalid cases. No browser executable existed in the isolated test configuration; no profile/state artifacts were created. Both full/unified smoke passed after explicitly forwarding the toolset environment to the client child process.
-- The existing smoke client's SDK transport omitted custom environment variables by default; explicit environment forwarding was necessary to test unified rather than silently launching full.
+### 规范源与分发
 
-| Actual compact tools/list definitions | full | unified |
+- 两项Skill：codex-chatgpt-review-github、codex-chatgpt-review-local，仍在Skills Manager中心源唯一编辑。
+- 共享规则仅一份：GitHub Skill的references/code-review-protocol.md；Local通过相邻目录引用。
+- Codex原有符号链接继续指向中心源；两项格式验证通过；5份导出与中心文本一致，见[一致性证据](evidence/skill-exports-v2.json)。没有新增.agents同名入口。
+- 管理器原记录曾指向V1草稿；核实GitHub快照与中心文本一致后，经现有set-source机制迁移到审查分支，保留原ID和部署。两项skills check均up_to_date，部署dry-run为2技能/0变更入口。合并后应按维护策略迁移远端跟踪分支；中心源仍为唯一日常编辑位置。
+- 只有A工具集已验收且宿主实际启用unified时才优先统一工具；未启用则继续full，不自动改环境、模型路由或宿主配置。
+
+### GitHub真实双轮：PASS（本合成任务）
+
+[专用公开测试仓库](https://github.com/jmwangde3/chatgpt-collaboration-review-fixture)，仅自建算术均值代码，无用户业务数据。初轮提交`744df28e0f2f65823f81717535ad3db4bdf46e64`，基线2/2测试通过。只向网页发送仓库/分支/SHA、任务和测试元数据，没有发送源码副本。
+
+网页实际读出实现、测试、README及Diff，指出整除错误AVG-001和测试缺口AVG-002。Codex加入非整除、负数和浮点断言，先实测5项中3项失败；改为普通除法后5/5通过，推送新SHA`76eb2dc6b775bae3d1c73a58c0910a68498642d7`。
+
+第二轮沿用原session、新request_id；网页按新SHA读取并逐字返回未在提示词披露的随机review-version注释，确认两项VERIFIED、无新问题、PASS。没有依靠浮动main或Codex的完整代码摘要。
+
+证据：[首轮](evidence/github-round1.md)、[复审](evidence/github-round2.md)。
+
+### Local真实双轮：PASS（本合成任务）
+
+同一任务置于无Git本地目录；每轮从磁盘读取两个必要文件、行号、SHA-256，第二轮附实际Diff与5/5测试结果，没有GitHub push。初轮网页指出同一整除错误；Codex独立复现3项失败并修复；复审正确回显新Evidence ID、两份完整哈希、更新源码，AVG-001变为VERIFIED并PASS。
+
+证据：[首轮](evidence/local-round1.md)、[复审](evidence/local-round2.md)。初始与最终源码和断言文本与GitHub样本一致；Git采用LF、Windows磁盘为CRLF，**字节哈希不同但规范化文本相同**，见[对照核验](evidence/fixture-equality-v2.json)。
+
+### 私库与恢复：实际验证
+
+- 新建仅含合成probe.py的专用私有fixture，Codex核实isPrivate=true。网页通过已有GitHub集成读取完整SHA`471ee9696cf7a885db8d67e17f218a3114884b15`，返回未在提示词披露的随机标记和正确blob SHA。没有改变授权或公开私库。见[私库证据](evidence/private-read-v2.md)。这只证明该账号对该测试仓库的实际访问，不代表所有私库均可访问。
+- GitHub初轮用短观察窗口实际得到running/timed_out，再继续读取原task_id直到completed；同一轮仅发送一次，没有换request_id重发。两个模式各保持同一会话两轮，独立任务使用不同session。
+
+## 4. 场景覆盖：真实证据与决策模拟分列
+
+独立Sol low Agent按两个Skill执行25项离线决策场景，主Agent核对路由、推送门禁和停止条件，25/25决策符合预期；明确simulation=true，**不是25项真实外部故障测试PASS**。见[场景记录](evidence/scenario-agent-v2.json)。
+
+| 编号 | 场景 | 真实证据 / 限制 |
+|---|---|---|
+|G01|公开仓库|真实双轮读取与修复复审PASS；自动路由另有模拟|
+|G02|私库且网页授权|真实指定私库/SHA/隐藏标记读取PASS|
+|G03|私库无授权回退|403回退决策模拟通过；未撤销账号权限制造真实拒绝|
+|G04|无remote|无Git Local双轮PASS；auto路由为决策模拟|
+|G05|未推送修改|真实安全提交、非默认分支推送、远端SHA核对、网页实读|
+|G06|推送失败|阻塞及不假成功为决策模拟，未真实注入远端故障|
+|G07|错误SHA|拒绝审查为决策模拟；真实正向SHA与新标记核对通过|
+|G08|main发生其他提交|固定SHA策略模拟；未改默认分支制造该场景|
+|G09|敏感内容|阻止提交/外发为决策模拟；没有上传真实密钥做测试|
+|G10|强制Local|实际无Git本地模式未push，完成两轮|
+|G11|强制GitHub不可访问|明确阻塞、不偷偷回退为决策模拟|
+|G12|新提交复审|实际新SHA及未披露标记实读PASS|
+|G13|修复后重核代码|两模式实际复现、修复、测试、新版本VERIFIED|
+|G14|必要文件无法读|INCOMPLETE及覆盖缺口为决策模拟|
+|L01|普通本地项目|实际两文件证据与两轮审查PASS|
+|L02|单文件变化|最小必要调用上下文选择为决策模拟|
+|L03|多个相关文件|实际实现与直接调用测试两个相关文件；复杂调用链未单独实测|
+|L04|第二轮修改|实际重新读文件/行号/Diff/哈希/测试PASS|
+|L05|旧代码已变化|实际第二轮新证据与哈希回显一致，未使用旧版本|
+|L06|没有Git|实际无Git两轮PASS|
+|L07|不允许GitHub push|实际Local不push，必要代码经授权发送ChatGPT；完全禁止外发另有停止模拟|
+|L08|观察超时恢复|共享MCP在GitHub流程真实原task恢复；Local对应决策另有模拟|
+|L09|大证据分批|依赖完整覆盖与分批顺序为决策模拟，未做真实大包压力测试|
+
+## 5. Token与效率对照
+
+### A4实际MCP定义体积
+
+| 指标 | full | unified |
 |---|---:|---:|
-| tool count |63|17|
-| UTF-8 bytes including descriptions |34147|12057|
-| characters including descriptions |30351|12055|
-| input-schema/name JSON bytes |19865|7399|
-| token heuristic (characters/4, rounded up) |7588|3014|
-| instructions characters |1176|833|
+|工具数|63|17|
+|完整工具JSON UTF-8字节数（含描述）|34,147|12,057|
+|完整工具JSON字符数|30,351|12,055|
+|输入Schema/名称JSON字节数|19,865|7,399|
+|Token粗估（字符/4向上取整）|7,588|3,014|
+|instructions字符数|1,176|833|
 
-These are serialized definition measurements, not Codex billed-token measurements or Local/GitHub review-workflow savings. Run `node scripts/measure-toolsets.js` to reproduce. No tokenizer dependency was added and the user's runtime configuration remains unchanged.
+[实测数据](evidence/toolset-metrics-v2.json)可用node scripts/measure-toolsets.js复现。Token只是启发式估算，不是精确Tokenizer计数或账单；未新增依赖。
 
-## B0–B6：双模式 Skill 与分发（2026-11-17）
+### 同一真实任务的两模式对照
 
-- 延用已安装的 `codex-chatgpt-review-github` 与 `codex-chatgpt-review-local`，不新增第三个 Router。共享协议只在 GitHub Skill 的 references 中保留一份，本地 Skill 通过相邻目录引用。
-- 唯一编辑位置仍为 Skills Manager 中心源；仓库 `skills/` 下为从中心源导出的审查/分发快照，不新增宿主发现入口。
-- 本次只在两份入口补充 V2 工具集门槛：A 已验收且宿主实际启用 unified 才优先统一工具；否则继续 full；不自动修改环境或全局配置。
-- 两份中心源与导出目录格式校验通过；5个文件一致性见 [导出证据](evidence/skill-exports-v2.json)。Codex原有符号链接仍指向中心源，部署 dry-run 显示2技能/0新增或变更入口；未创建 `.agents` 同名入口。
-- 旧安装记录曾引用V1草稿，中心源更新后 `skills check` 报 update_available。逐文件核实 GitHub 快照与中心源文本一致后，经 Skills Manager `set-source` 迁移至本审查分支，保留原技能ID、标签与部署。两项现均 `up_to_date`。中心源仍为日常唯一编辑位置；源码跟踪分支为本审查分支，合并后应按实际维护策略迁移到主分支。
-- 全局 MCP 连接仍保持原 full 模式，未部署新服务代码，未改模型路由或现有浏览器实现。
+| 指标 | Local | GitHub |
+|---|---:|---:|
+|用于额外证据打包的Codex文件读取|4（每轮2）|0（仍正常读代码、测试与Diff）|
+|网页请求轮数/发送次数|2/2|2/2|
+|两轮提示词字符数|1,160＋2,281＝3,441|813＋699＝1,512|
+|发送源码字符数（不计行号）|380＋676，另有712字符Diff|0|
+|网页报告读取的文件数|每轮2|每轮3（含README）|
+|首任务创建至第二轮首次读完的观测间隔|318.156秒|486.317秒|
+|Codex额外实际计费Token|N/A，运行时未提供分步骤计量|N/A，同左|
 
-## B7 场景验收账本（实时审查进行中）
+[原始观测汇总](evidence/workflow-comparison-v2.json)。本样本GitHub模式确实省去了源码证据打包，提示词字符数较Local少约56%；但GitHub观测耗时更长，且时间包含调用方整理/并行等待，不能当成纯模型延迟。只有一组小型合成样本，不能推导一般性能或精确Codex Token节省率。两种模式均发现同一功能错误并对更新代码复审通过。
 
-以下严格区分规则已交付、Codex侧测试与真实网页端到端测试。没有网页独立实读证据的场景不能算PASS。
+## 6. 最终结论与遗留项
 
-| 编号 | 场景 | 当前证据 / 状态 |
-|---|---|---|
-|G01|公开仓库独立读取|实际请求已提交，等待独立实读证据|
-|G02|私有仓库已有授权|没有可核实的网页授权证据，未验证|
-|G03|私有仓库无授权自动回退|规则已写入，真实权限场景未验证|
-|G04|无remote回退Local|规则已写入；本地无Git证据采集成功，独立Agent路由未验证|
-|G05|未推送代码安全同步|本工程审查分支已实测提交/推送/远端SHA一致；非网页Skill完整流程|
-|G06|推送失败不得假成功|规则已写入，Skill级故障注入未验证|
-|G07|错误SHA无效|规则已写入，网页错SHA场景未验证|
-|G08|main变化仍锁定SHA|完整SHA要求已交付，独立场景未验证|
-|G09|敏感文件阻止推送|提交范围检查已执行；未用真实敏感数据做上传测试，Skill场景未验证|
-|G10|强制Local不推送|规则已写入，本地合成证据测试未push；独立Agent路由未验证|
-|G11|强制GitHub无法读取阻塞|规则已写入，网页登录阻塞被如实报告；私库访问场景未验证|
-|G12|新提交重新读取SHA|本工程已多批新SHA推送，网页实读未验证|
-|G13|修复后对照新代码|Codex本地缺陷重现→修复→测试通过，网页复审未验证|
-|G14|必要文件不能读取|规则已写入，网页缺文件场景未验证|
-|L01|普通本地项目取材|Codex合成样例已实测；网页审查未完成|
-|L02|单文件变化最小证据|范围规则已交付；独立Agent取材行为未验证|
-|L03|多文件调用关系|范围规则已交付；复杂调用链场景未验证|
-|L04|第二轮重新读取|Codex每阶段实际重读和hash已实测；网页复审未完成|
-|L05|拒绝旧证据|文件hash变化已实测；网页旧证据拒绝场景未验证|
-|L06|没有Git仓库|Codex合成样例已确认不属Git仓库、仍正常运行测试并取材|
-|L07|禁止GitHub上传|Codex合成样例没有remote/没有push；独立Agent权限场景未验证|
-|L08|MCP等待超时恢复原任务|TaskKernel离线恢复回归通过；真实网页任务恢复未完成|
-|L09|证据过大适度分批|规则已交付；真实大证据分批未验证|
+- **A：PASS**。四项工程改造及双平台离线CI通过；221项单元、真实浏览器专项、两模式smoke、pack及diff检查通过。新源码仍待审核，未覆盖运行服务。
+- **B：CONDITIONAL**。公开GitHub双轮、Local双轮、私库已授权实读、版本绑定、原任务恢复和Skill分发已有真实证据；部分失败/权限/大证据场景仅有独立Agent决策模拟。
+- **整体：CONDITIONAL**。可以受监督试用和代码审核；尚不能称为所有场景均完成真实外部集成验收。
 
-自动选择和手动覆盖的规则已交付；不得把阅读这些规则当成上述场景的行为测试。
+剩余：私库无授权的真实拒绝、真实推送失败、错SHA/缺文件的外部故障注入、大证据分批压力场景、精确Codex额外Token计量。没有为了测试而撤销权限、公开私库、上传真实敏感内容或改默认分支。账号当前已登录，**不需要重复登录**。
 
-### 曾出现的网页登录误报与当前修复
-
-现有 MCP `chat_status`（本任务独立session）返回“专用浏览器尚未登录”；没有提交任何新的审查消息，因此没有新task_id可恢复。用户要求打开浏览器后，已使用现有项目登录入口打开专用登录窗口，等待手动认证。没有读取Cookie/凭据、接管日常Chrome、关闭其他浏览器或清理13项旧uncertain任务。此前V1失败请求没有重复发送。
-
-### Local证据阶段的实际结果
-
-[本地合成证据](evidence/local-fixture-v2.json)：初始2项通过；加入非整数均值断言后3项中1项失败；修复整除后3项通过。每阶段重新读取源码、测试并计算SHA-256，确认临时目录不属于Git仓库；没有GitHub推送，也没有ChatGPT回复。该证据仅验证Codex侧取材和修复，不能算完整Local双轮PASS。
-
-## B8：Local/GitHub工作流效率
-
-目前没有完成同一合成任务的两种网页审查闭环：Codex额外Token、网页实际读取文件数、两轮审查时间和真实发送内容长度均缺乏可比较的测量，记为N/A。A4的工具定义体积对比不能代替这项工作流A/B测试。没有使用虚构节省率。
-## 当前总判定与审核范围
-
-- **WORK PACKAGE A: PASS（工程离线验收）**。A1–A3 在 `8c8a7c7` 的 [CI43908050033](https://github.com/jmwangde3/chatgpt-web-mcp/actions/runs/43908050033) 四任务全绿；完整 A1–A4 代码 `fe93eb9` 的 [CI43910588482](https://github.com/jmwangde3/chatgpt-web-mcp/actions/runs/43910588482) 也四任务全绿。本地最终单元206/206、发送专项19/19、Windows安全专项5/5，full/unified smoke通过，pack dry-run通过，diff check通过。没有声称已在真实账号部署新代码。
-- **WORK PACKAGE B: CONDITIONAL**。两项Skill中心源、单份协议、分发与静态验收通过；真实复审完成前，GitHub独立实读、私有仓库权限、真实双轮复审、任务恢复及23场景行为验收仍不完整。不得作为完整端到端PASS。
-- **OVERALL: CONDITIONAL**。代码可交审；正式稳定使用的完整验收仍依赖后续真实网页证据。
-
-### 审核文件与影响
-
-| 范围 | 文件 | 原因及兼容影响 |
-|---|---|---|
-|原子发送|src/browser.js、src/shared/send-guard.js、src/core/tasks.js|初始化时提前安装校验器，点击前证明顺序，事件内做最终精确校验；明确未发送才释放任务，保留原消息身份验证|
-|Windows安全|src/shared/windows-security.js、src/shared/persistent-browser.js、src/core/diagnostics.js、src/providers/adapters.js|进程创建时间/可执行文件/Profile/端口所有权、路径/ACL和只读诊断；不修复既有权限、不关闭未知进程、不存储完整命令行|
-|工具集|src/config.js、src/index.js、scripts/smoke-mcp.js、scripts/measure-toolsets.js|默认full63工具兼容；可选unified17工具，动态说明；不改全局连接|
-|CI与测试|.github/workflows/ci.yml、test/、integration/|Ubuntu/Windows离线fixture；现有测试保留，附件成功等待适配runner负载，负向断言保留|
-|文档/技能|README.md、README.en.md、.env.example、skills/双Skill、docs/evidence/|明确能力边界、中心源导出快照和可复核证据；不新增第三入口或浏览器实现|
-
-修改前HEAD：`65c130ef9fb405dd12a13d6a0af9f8b225ece2c9`；完整工程代码HEAD：`fe93eb9`；审查分支：`review/chatgpt-collaboration-v2`。后续文档/Skill快照提交不代表新生产部署。实际当前HEAD以GitHub审查分支为准。原仓库main及其工作区未写入本次源码改动；所有生产改动在隔离工作副本完成。本地HANDOFF不提交。
-
-### 后续必要事项
-
-1. 当前已确认账号登录，继续本任务独立会话的真实复审；不再要求重复登录，不清理其他任务或读取凭据。
-2. 用无敏感专用测试仓库执行GitHub固定SHA双轮审查；私库分别核实网页授权，不以Codex授权替代。
-3. 对同一合成任务完成Local两轮、真实观察超时后的同task_id恢复，以及完整路由场景。
-4. 记录真实请求字符数、文件读取次数、轮数/时间；无法获得精确Token时继续标明估算或N/A。
-5. 本审查分支合并后，按维护策略迁移Skills Manager远端跟踪分支；中心源仍是唯一编辑位置。
-
-## 实机发现的启动父子PID问题（后续修正）
-
-用户指出可见页面已经登录。原登录辅助进程在启动时还遇到 `AbortSignal=null` 错误；同时Chrome实际监听进程为启动PID的直接子进程，保存的父PID已经退出。专用Profile和账号会话没有丢失。不能把接管失败直接解释成账号需要重新登录。
-
-- `PersistentBrowser.connect` 现将空signal归一为undefined，并允许Windows已验证启动链在父进程正常退出后有界等待实际监听进程。
-- 只有尚未补充创建时间的启动记录、实际进程是记录PID的直接子进程、创建时间落在启动记录的紧密窗口内，才允许迁移；可执行文件/Profile/端口/loopback检查仍全部保留。已验证创建时间的记录不能任意迁移PID。
-- 新增15项模拟回归，身份查询文件22/22；完整单元221/221；包含connect(null)的真实临时浏览器回归通过。
-- 在实际窗口只读核实完整身份后，取得操作锁、备份旧状态，仅补正实际PID等身份元数据。未改Cookie/Profile内容或原13项uncertain记录；现有MCP随后明确返回signedIn=true。
-- 该修正源码仍在审查分支，未覆盖已运行服务代码。当前实例恢复依靠经过验证的兼容状态迁移。
-- 已用独立session实际提交GitHub合成仓库审查；首次1秒观察到期返回running/timed_out=true，仍保留原task_id继续读取，没有重发。
+保留公开/私有合成fixture仓库供追溯，不删除用户资源。Skills Manager远端目前跟踪此审查分支，合并后再按维护策略迁移；中心源仍唯一编辑。后续若要部署新服务，应走现有安装/更新流程，本次没有擅自切换全局配置。

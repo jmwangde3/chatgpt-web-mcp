@@ -1,0 +1,65 @@
+{
+  "fixture": "same arithmetic-mean task; initial/final normalized source text and tests match; Git LF versus Windows CRLF bytes differ",
+  "measurementLimits": [
+    "one small synthetic pair only",
+    "requests ran in independent concurrent ChatGPT sessions",
+    "wall intervals include caller scheduling; not isolated model latency",
+    "no per-step billed Codex token telemetry; no claimed billed-token savings"
+  ],
+  "github": {
+    "rounds": 2,
+    "sendCount": 2,
+    "reviewEvidenceFileReadsByCodex": 0,
+    "promptChars": [
+      813,
+      699
+    ],
+    "sourceCharsSent": 0,
+    "filesReportedReadPerRound": [
+      3,
+      3
+    ],
+    "firstTaskCreated": 1794848806599,
+    "lastTaskFirstObservedComplete": 1794849292916,
+    "observedWorkflowSeconds": 486.317,
+    "independentReadProof": {
+      "reviewedSHA": "76eb2dc6b775bae3d1c73a58c0910a68498642d7",
+      "unrevealedMarkerEchoVerified": true
+    }
+  },
+  "local": {
+    "rounds": 2,
+    "sendCount": 2,
+    "reviewEvidenceFileReadsByCodex": 4,
+    "promptChars": [
+      1160,
+      2281
+    ],
+    "sourceCharsWithoutLineNumbersPerRound": [
+      380,
+      676
+    ],
+    "diffCharsRound2": 712,
+    "filesReportedReadPerRound": [
+      2,
+      2
+    ],
+    "firstTaskCreated": 1794849225208,
+    "lastTaskFirstObservedComplete": 1794849543364,
+    "observedWorkflowSeconds": 318.156,
+    "freshHashesEchoVerified": true,
+    "noGitRepository": true,
+    "noPush": true
+  },
+  "recovery": {
+    "observationTimeout": true,
+    "originalTaskResumed": true,
+    "duplicateSend": false,
+    "phase": "GitHub round1; original task returned running/timed_out then completed"
+  },
+  "codexExtraBilledTokens": {
+    "github": null,
+    "local": null,
+    "reason": "not exposed by runtime; prompt characters are observable but do not measure total Codex processing"
+  }
+}
