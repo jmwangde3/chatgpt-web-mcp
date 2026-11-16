@@ -64,6 +64,18 @@ function normalize(value) {
     .toLocaleLowerCase();
 }
 
+// Compare known thinking-level aliases without changing the page label or
+// applying translations to model names and independent answer-tier controls.
+function thinkingLevelKey(value) {
+  const label = normalize(value);
+  return label === "高" || label === "high" ? "high" : label;
+}
+
+function sameThinkingLevel(left, right) {
+  const key = thinkingLevelKey(left);
+  return Boolean(key) && key === thinkingLevelKey(right);
+}
+
 /**
  * Decide whether an automation request may write to the composer.
  *
@@ -2393,7 +2405,7 @@ export class ChatGPTBrowser {
       const level = parseAnswerTier(await toggle.innerText());
       const statusLevel = parseAnswerTier(await status.innerText());
       const model = (await checked.innerText()).replace(/\s+/g, " ").trim();
-      if (!level || level !== statusLevel || !model) throw new ChatGPTWebError("模型菜单当前状态无法核验。");
+      if (!sameThinkingLevel(level, statusLevel) || !model) throw new ChatGPTWebError("模型菜单当前状态无法核验。");
       return { layout: "semantic-direct-picker", picker: menu, slider, modelRow: { locator: toggle, value: model }, thinkingRow: { locator: slider, value: level } };
     }
     const picker = page
@@ -2816,7 +2828,7 @@ export class ChatGPTBrowser {
     const page = await this.page();
     const opened = await this.openAdvancedSettings();
     const { modelRow, thinkingRow } = opened;
-    if (normalize(thinkingRow.value) === normalize(thinkingLevel)) {
+    if (sameThinkingLevel(thinkingRow.value, thinkingLevel)) {
       await this.closeAdvancedMenus();
       return { requested: thinkingLevel, selected: thinkingRow.value, changed: false };
     }
@@ -2849,7 +2861,7 @@ export class ChatGPTBrowser {
           ? (await this.directAdvancedSettings(opened.picker)).thinkingRow.value
           : parseAnswerTier(await opened.modelRow.locator.innerText().catch(() => ""));
         if (observed) available.push(observed);
-        if (normalize(observed) === normalize(thinkingLevel)) {
+        if (sameThinkingLevel(observed, thinkingLevel)) {
           await this.closeAdvancedMenus();
           let selected;
           if (opened.layout === "semantic-direct-picker") {
@@ -2857,7 +2869,7 @@ export class ChatGPTBrowser {
             selected = verified.thinkingRow.value;
             await this.closeAdvancedMenus();
           } else selected = await this.answerTierControlLabel();
-          if (normalize(selected) !== normalize(thinkingLevel)) {
+          if (!sameThinkingLevel(selected, thinkingLevel)) {
             throw new ChatGPTWebError("思考强度切换后未通过页面校验。", {
               requested: thinkingLevel,
               observed: selected,
@@ -2900,7 +2912,7 @@ export class ChatGPTBrowser {
     const options = await this.visibleMenuOptions({
       exclude: [modelRow.text, thinkingRow.text],
     });
-    const matches = rankTextMatch(options, thinkingLevel, (item) => item.name);
+    const matches = options.filter((item) => sameThinkingLevel(item.name, thinkingLevel));
     if (!matches.length) {
       const slider = await this.firstVisible(SELECTORS.thinkingSliders, { timeout: 300 });
       const sliderState = slider ? await this.thinkingSliderState() : null;
@@ -2930,17 +2942,15 @@ export class ChatGPTBrowser {
         },
       );
     }
-    const best = matches[0];
-    const tied = matches.filter((entry) => entry.score === best.score);
-    if (best.score < 100 && tied.length > 1) {
+    if (matches.length > 1) {
       await this.closeAdvancedMenus();
       throw new ChatGPTWebError("思考强度匹配到多个选项，请使用完整名称。", {
         requested: thinkingLevel,
-        matches: tied.map((entry) => entry.item.name),
+        matches: matches.map((item) => item.name),
       });
     }
 
-    const option = best.item;
+    const option = matches[0];
     await this.clickMenuOption(option);
     this.rememberSettings(modelRow.value, option.name);
     const selected = option.name;
@@ -3938,20 +3948,20 @@ export class ChatGPTBrowser {
   }
 
   async applySendSettings({ model, thinkingLevel, answerTier } = {}) {
-    if (thinkingLevel && answerTier && normalize(thinkingLevel) !== normalize(answerTier)) {
+    if (thinkingLevel && answerTier && !sameThinkingLevel(thinkingLevel, answerTier)) {
       throw new ChatGPTWebError("思考强度和回答档位冲突，未发送。", { thinkingLevel, answerTier });
     }
     const useDefaults = !model && !thinkingLevel && !answerTier;
     const targetModel = model || (useDefaults ? DEFAULT_CHAT_MODEL : null);
     const targetThinking = thinkingLevel || (useDefaults ? DEFAULT_CHAT_THINKING_LEVEL : null);
     if (targetModel) await this.selectModel(targetModel);
-    if (targetThinking) await this.selectThinkingLevel(targetThinking);
+    const thinkingResult = targetThinking ? await this.selectThinkingLevel(targetThinking) : null;
     const tierResult = answerTier && !thinkingLevel ? await this.selectAnswerTier(answerTier) :
-      answerTier ? { selected: thinkingLevel, verifiedBy: "thinking-level" } : null;
+      answerTier ? { selected: thinkingResult.selected, verifiedBy: "thinking-level" } : null;
     if (targetModel || targetThinking) {
       const observed = await this.advancedSettings({ force: true });
       if ((targetModel && normalize(observed.model) !== normalize(targetModel)) ||
-          (targetThinking && normalize(observed.thinkingLevel) !== normalize(targetThinking))) {
+          (targetThinking && !sameThinkingLevel(observed.thinkingLevel, targetThinking))) {
         throw new ChatGPTWebError("发送前模型或思考强度未通过页面复核。", { requested: { model: targetModel, thinkingLevel: targetThinking }, observed });
       }
     }

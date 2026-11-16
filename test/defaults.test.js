@@ -12,7 +12,7 @@ function setup() {
   const events = [], state = { model: 'old', thinkingLevel: '中' };
   const browser = {
     selectModel: async model => { events.push(['model', model]); state.model = model; },
-    selectThinkingLevel: async level => { events.push(['thinking', level]); state.thinkingLevel = level; },
+    selectThinkingLevel: async level => { events.push(['thinking', level]); state.thinkingLevel = level; return {selected: level}; },
     selectAnswerTier: async tier => { events.push(['tier', tier]); return { selected: tier }; },
     advancedSettings: async options => { events.push(['read', options]); return { ...state }; },
   };
@@ -26,6 +26,42 @@ test('ChatGPT defaults are selected and force verified; failure rejects', async 
   assert.deepEqual(events, [['model','GPT-6'], ['thinking','高'], ['read',{force:true}]]);
   browser.advancedSettings = async () => ({ model: 'wrong', thinkingLevel: '高' });
   await assert.rejects(browser.applySendSettings(), /复核/);
+});
+
+test('only exact 高 and High are aliases in thinking verification and conflicts', async () => {
+  const {browser, events} = setup();
+  browser.selectThinkingLevel = async value => { events.push(['thinking', value]); return {selected:'High'}; };
+  browser.advancedSettings = async () => ({model:'GPT-6', thinkingLevel:'High'});
+  await browser.applySendSettings();
+  const result = await browser.applySendSettings({thinkingLevel:'高', answerTier:'High'});
+  assert.equal(result.answerTier.selected, 'High');
+  for (const other of ['极高', 'Pro', '较高', 'Very High']) {
+    await assert.rejects(browser.applySendSettings({thinkingLevel:'高', answerTier:other}), /冲突/);
+    browser.advancedSettings = async () => ({model:'GPT-6', thinkingLevel:other});
+    await assert.rejects(browser.applySendSettings(), /复核/);
+  }
+  browser.advancedSettings = async () => ({model:'GPT-6', thinkingLevel:'High'});
+  await assert.rejects(browser.applySendSettings({model:'GPT-6 High'}), /复核/);
+});
+
+test('legacy thinking menu requires one exact semantic match', async () => {
+  const b = new ChatGPTBrowser(); let options = [{name:'High'}], clicked;
+  b.page = async () => ({});
+  b.openAdvancedSettings = async () => ({modelRow:{value:'GPT-6'}, thinkingRow:{value:'中'}});
+  b.closeAdvancedMenus = async () => {};
+  b.clickAdvancedRow = async () => {};
+  b.visibleMenuOptions = async () => options;
+  b.clickMenuOption = async option => { clicked = option.name; };
+  b.firstVisible = async () => null;
+  assert.equal((await b.selectThinkingLevel('高')).selected, 'High');
+  assert.equal(clicked, 'High');
+  options = [{name:'高'}, {name:'High'}]; clicked = null;
+  await assert.rejects(b.selectThinkingLevel('高'), /多个选项/); assert.equal(clicked, null);
+  for (const name of ['Very High', '极高', 'Pro', '较高']) {
+    options = [{name}];
+    await assert.rejects(b.selectThinkingLevel('高'), /不在当前账号/);
+    assert.equal(clicked, null);
+  }
 });
 
 test('explicit choices suppress defaults and conflicting tiers fail before clicks', async () => {
@@ -79,7 +115,7 @@ test('unverified defaults in real adapter fail durable task without sending', as
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'web-chat-default-fail-'));
   t.after(() => fs.rm(dir, {recursive:true, force:true}));
   const {browser, events} = setup();
-  browser.advancedSettings = async () => ({model:'wrong', thinkingLevel:'高'});
+  browser.advancedSettings = async () => ({model:'GPT-6', thinkingLevel:'Very High'});
   Object.assign(browser, {runExclusive: fn => fn(), assertActionsAllowed: async()=>{}, ensureSignedIn: async()=>{}, assertComposerEmpty: async()=>{}, ensureConversationCapacity: async()=>{}, refreshBeforeSend: async()=>{}});
   const adapter = chatgptProvider(browser);
   adapter.send = async () => { events.push(['send']); };

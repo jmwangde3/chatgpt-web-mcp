@@ -136,3 +136,23 @@ test('semantic menu rejects ambiguous or inconsistent controls', async t => {
   await menu.locator('[role=slider]').evaluate(e => e.parentNode.append(e.cloneNode()));
   await assert.rejects(reader.directAdvancedSettings(menu), /歧义/);
 });
+
+test('mixed language picker recognizes and verifies High as 高 without changing displayed labels', async t => {
+  const {page} = await fixture(t, `<form><textarea id="composer"></textarea><button type="button" id="tier" aria-label="选择 ChatGPT 模型" aria-haspopup="menu">High</button></form><div role="menu" id="menu" hidden><div role="menuitem" aria-label="选择模型">High</div><span role="status">高，第 3 项，共 3 项。</span><div role="menuitem" aria-label="强度"><span role="slider" aria-hidden="true" tabindex="-1" aria-valuemin="0" aria-valuemax="2" aria-valuenow="2" style="display:inline-block;width:100px;height:20px"></span></div><div role="menuitemradio" aria-checked="true">GPT-6</div></div>`);
+  await page.evaluate(() => {
+    const trigger = document.querySelector('#tier'), menu = document.querySelector('#menu'), slider = menu.querySelector('[role=slider]');
+    window.keys = [];
+    trigger.onclick = () => { menu.hidden = false; };
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') menu.hidden = true; });
+    slider.onkeydown = e => { window.keys.push(e.key); let n = +slider.getAttribute('aria-valuenow'); if (e.key === 'Home') n = 0; if (e.key === 'ArrowRight') n = Math.min(2,n+1); slider.setAttribute('aria-valuenow',n); const v=['即时','中','High'][n]; menu.querySelector('[aria-label="选择模型"]').textContent=v; menu.querySelector('[role=status]').textContent=(n === 2 ? '高' : v)+'，第 '+(n+1)+' 项，共 3 项。'; trigger.textContent=v; };
+  });
+  const reader = new ChatGPTBrowser(); reader.page = async () => page; reader.composer = async () => page.locator('#composer'); reader.ensureSignedIn = async () => {}; reader.pageInteraction = async () => {};
+  assert.deepEqual(await reader.selectThinkingLevel('高'), {requested:'高', selected:'High', changed:false});
+  await reader.applySendSettings();
+  assert.deepEqual(await page.evaluate(() => window.keys), []);
+  assert.equal((await reader.advancedSettings({force:true})).thinkingLevel, 'High');
+  await page.evaluate(() => { document.querySelector('[role=slider]').setAttribute('aria-valuenow','1'); document.querySelector('[aria-label="选择模型"]').textContent='中'; document.querySelector('[role=status]').textContent='中，第 2 项，共 3 项。'; });
+  const changed = await reader.selectThinkingLevel('高');
+  assert.equal(changed.selected, 'High'); assert.equal(changed.changed, true);
+  assert.deepEqual(changed.available, ['即时', '中', 'High']);
+});
