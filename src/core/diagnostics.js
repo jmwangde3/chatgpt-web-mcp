@@ -1,3 +1,4 @@
+import { verifyWindowsPaths, verifyWindowsProcess } from '../shared/windows-security.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readState, processAlive } from '../shared/persistent-browser.js';
@@ -32,6 +33,14 @@ export async function diagnose(kernel, ids = [...kernel.providers.keys()]) {
       const browser = await localState(config.browserState);
       check('browser_process', 'info', processAlive(browser.pid) ? 'RUNNING_UNVERIFIED' : 'NOT_RUNNING', 'Local PID check only; sign-in and browser connectivity are not verified.');
     } catch { check('browser_process', 'fail', 'UNREADABLE_STATE', 'Inspect local browser state privately.'); }
+    if (process.platform === 'win32' && config?.profile) {
+      try { await verifyWindowsPaths(config, { allowCreate: false }); check('profile_security', 'pass', 'VERIFIED', 'none'); }
+      catch (error) { check('profile_security', error.code === 'PROFILE_MISSING' ? 'warn' : 'fail', ['PROFILE_MISSING','PROFILE_REPARSE_POINT','PROFILE_IN_REPOSITORY','PROFILE_ACL_UNSAFE','PROFILE_NOT_DIRECTORY','PROFILE_NOT_FILE','SECURITY_QUERY_TIMEOUT'].includes(error.code) ? error.code : 'PROFILE_SECURITY_UNVERIFIED', 'Inspect locally; existing permissions and data were preserved.'); }
+      try {
+        const state = await localState(config.browserState);
+        if (state.pid) { await verifyWindowsProcess({ ...state, executable: config.executable, profile: config.profile }); check('browser_ownership', 'pass', 'VERIFIED', 'Sign-in is not checked.'); }
+      } catch { check('browser_ownership', 'fail', 'BROWSER_IDENTITY_UNVERIFIED', 'Preserve state and inspect locally; no process was terminated.'); }
+    }
     for (const [name, file] of [['operation_lock', config?.operationLock], ['task_lock', path.join(kernel.directory, id, 'tasks.json.lock')]]) {
       if (!file) continue;
       try {

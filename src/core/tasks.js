@@ -162,7 +162,8 @@ export class TaskKernel {
           await save();
         }, { signal, name: 'chat_send' });
       } catch (error) {
-        task.state = task.state === 'preparing' ? 'failed' : 'uncertain';
+        const definitelyNotSent = error.code === 'SEND_NOT_ATTEMPTED' && error.sendOutcome === 'not_attempted';
+        task.state = definitelyNotSent ? 'failed' : task.state === 'preparing' ? 'failed' : 'uncertain';
         task.blocking = task.state !== 'failed';
         task.error = { code: error.code || (signal?.aborted ? 'INTERRUPTED' : 'PROVIDER_ERROR'), message: error.message.split('\n')[0] };
         task.updated_at = Date.now(); if (!task.blocking) releaseTask(state, task);

@@ -1,3 +1,4 @@
+import { guardedSend } from './shared/send-guard.js';
 import { answerTierControlDOM } from './shared/composer-controls.js';
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -925,7 +926,7 @@ export function parseAdvancedRowValue(text, labels) {
 export class ChatGPTBrowser {
   constructor({ sessionId } = {}) { this.sessionId = validateSessionId(sessionId); }
   #runtime = new PersistentBrowser({
-    browserState: BROWSER_STATE_FILE, profile: USER_DATA_DIR,
+    browserState: BROWSER_STATE_FILE, profile: USER_DATA_DIR, runtimeState: RUNTIME_STATE_FILE, operationLock: OPERATION_LOCK_FILE,
     executable: CHROME_EXECUTABLE, url: CHATGPT_URL, headless: HEADLESS,
     actionTimeout: ACTION_TIMEOUT_MS, launchArgs: ['--start-maximized', '--new-window'],
   });
@@ -3637,7 +3638,7 @@ export class ChatGPTBrowser {
     };
   }
 
-  async clickSendButton({ timeoutMs = ACTION_TIMEOUT_MS } = {}) {
+  async clickSendButton({ timeoutMs = ACTION_TIMEOUT_MS, guard } = {}) {
     const page = await this.page();
     const deadline = Date.now() + timeoutMs;
     // File chips can be visible while upload processing still disables Send.
@@ -3649,13 +3650,16 @@ export class ChatGPTBrowser {
         if (await send.isVisible().catch(() => false) && await send.isEnabled().catch(() => false)) {
           throwIfAborted(this.signal?.());
           // A failed/ambiguous click must escape this loop, never trigger a retry.
-          await this.click(send, 'send-prompt-click');
+          if (guard) await guardedSend({ page, button: send, ...guard, click: target => this.click(target, 'send-prompt-click') });
+          else await this.click(send, 'send-prompt-click');
           return;
         }
       }
       await waitWithAbort(Math.min(100, Math.max(0, deadline - Date.now())), this.signal?.());
     } while (Date.now() < deadline);
-    throw new ChatGPTWebError('没有可用的发送按钮；草稿已保留，未尝试 Enter 或再次发送。', { code: 'SEND_CONTROL_UNAVAILABLE' });
+    const error = new ChatGPTWebError('没有可用的发送按钮；草稿已保留，未尝试 Enter 或再次发送。', { code: 'SEND_CONTROL_UNAVAILABLE' });
+    if (guard) Object.assign(error, { code: 'SEND_NOT_ATTEMPTED', sendOutcome: 'not_attempted' });
+    throw error;
   }
 
   async submitPrompt({
@@ -3677,6 +3681,8 @@ export class ChatGPTBrowser {
     if (!composer) throw new ChatGPTWebError("没有找到提示词输入框。");
     await this.assertComposerWritable("submit-prompt", composer);
     const promptText = await this.composerText(composer);
+    const exactDraft = await composer.evaluate(node => ('value' in node ? node.value : node.innerText ?? node.textContent ?? ''));
+    const expectedURL = page.url();
     if (!normalize(promptText)) throw new ChatGPTWebError("输入框为空，无法发送。");
 
     const assistantBefore = await this.assistantLocator().count();
@@ -3687,7 +3693,7 @@ export class ChatGPTBrowser {
     const userBefore = userBeforeSnapshot.count;
     await this.siteAction("send-prompt");
     await beforeSubmit?.();
-    await this.clickSendButton();
+    await this.clickSendButton({ guard: { composer, expectedText: exactDraft, expectedURL, allowedOrigin: new URL(CHATGPT_URL).origin } });
     await this.markSendPerformed();
 
     const generationStartedAt = Date.now();

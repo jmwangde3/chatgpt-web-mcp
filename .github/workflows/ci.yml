@@ -26,7 +26,11 @@ jobs:
       - run: npm pack --dry-run
 
   offline-browser-tests:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -35,4 +39,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright-core install --with-deps chromium
+        if: runner.os == 'Linux'
+      - run: npx playwright-core install chromium
+        if: runner.os == 'Windows'
       - run: npm run test:browser
+      - run: node --test integration/send-guard.browser.js integration/windows-security.browser.js

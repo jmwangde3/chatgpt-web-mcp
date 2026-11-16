@@ -11,6 +11,7 @@ import { geminiConfig } from "../src/gemini/config.js";
 import { PersistentBrowser, processAlive, readState } from "../src/shared/persistent-browser.js";
 import { TaskKernel } from "../src/core/tasks.js";
 import { geminiProvider } from "../src/providers/adapters.js";
+import { secureNewFixture } from "./private-fixture.js";
 
 let chrome;
 before(async () => { chrome = await chromium.launch({ executablePath: geminiConfig().executable || chromium.executablePath(), headless: true }); });
@@ -603,6 +604,7 @@ test("last-minute draft changes are caught before clicking send", async (t) => {
 test("dedicated browser persists across disconnects and explicit close terminates it", async (t) => {
   const root = path.resolve(os.tmpdir());
   const directory = await fs.mkdtemp(path.join(root, "gemini-runtime-test-"));
+  await secureNewFixture(directory);
   const config = { ...geminiConfig({ GEMINI_WEB_DATA_DIR: directory }), url: "about:blank", headless: true, executable: geminiConfig().executable || chromium.executablePath() };
   const runtime = new PersistentBrowser(config);
   t.after(async () => { await runtime.terminate(); assert.equal(path.dirname(directory), root); await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); });

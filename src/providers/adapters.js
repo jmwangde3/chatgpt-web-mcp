@@ -1,7 +1,7 @@
 import { SELECTORS as chatgptSelectors } from '../selectors.js';
 import { SELECTORS as geminiSelectors } from '../gemini/selectors.js';
 import { WebUIError } from '../shared/persistent-browser.js';
-import { CHROME_EXECUTABLE, BROWSER_STATE_FILE, RUNTIME_STATE_FILE, OPERATION_LOCK_FILE } from '../config.js';
+import { USER_DATA_DIR, CHROME_EXECUTABLE, BROWSER_STATE_FILE, RUNTIME_STATE_FILE, OPERATION_LOCK_FILE } from '../config.js';
 import { isResponseFailure } from '../gemini/browser.js';
 import { classifyRateLimitText } from '../browser.js';
 
@@ -50,7 +50,7 @@ export function geminiProvider(browser) {
 export function chatgptProvider(browser) {
   return {
     id: 'chatgpt', browser, stagedSend: true, prepareSettings: true,
-    localConfig: { executable: CHROME_EXECUTABLE, browserState: BROWSER_STATE_FILE, runtimeState: RUNTIME_STATE_FILE, operationLock: OPERATION_LOCK_FILE },
+    localConfig: { profile: USER_DATA_DIR, executable: CHROME_EXECUTABLE, browserState: BROWSER_STATE_FILE, runtimeState: RUNTIME_STATE_FILE, operationLock: OPERATION_LOCK_FILE },
     capabilities: { files: true, models: true, history: true, archive: 'provider-transcript', cancellation: true, sessions: true },
     isRoot: (url) => url === 'https://chatgpt.com',
     isProvisional: (url) => /^\/c\/(?:WEB:|local-chatgpt:)[^/]+$/.test(decodeURIComponent(new URL(url).pathname)),

@@ -1,3 +1,4 @@
+import { verifyWindowsProcess, verifyWindowsPaths } from './windows-security.js';
 import fs from "node:fs/promises";
 import path from "node:path";
 import net from "node:net";
@@ -96,7 +97,8 @@ export async function browserEndpoint(port, { signal, timeout = 1000, fetchImpl 
 // Provider-neutral persistent Chrome runtime. Connecting and disconnecting does
 // not terminate Chrome; only explicit terminate() sends Browser.close.
 export class PersistentBrowser {
-  constructor(config, { connect = chromium.connectOverCDP.bind(chromium), fetchImpl = fetch, spawnImpl = spawn } = {}) {
+  constructor(config, { connect = chromium.connectOverCDP.bind(chromium), fetchImpl = fetch, spawnImpl = spawn, security = process.platform === "win32" ? { paths: verifyWindowsPaths, process: verifyWindowsProcess } : null } = {}) {
+    this.security = security;
     this.config = config; this.browser = null; this.context = null;
     this.connector = connect; this.fetchImpl = fetchImpl; this.spawnImpl = spawnImpl;
     this.diagnostic = browserDiagnostics(config.browserState);
@@ -109,7 +111,12 @@ export class PersistentBrowser {
     if (this.attaching || this.disconnecting) throw new WebUIError('CONTROL_BUSY', 'The previous control connection is still closing; retry reading the same task later.');
     const config = this.config;
     this.launched = false;
+    if (this.security) await this.security.paths(config);
     const prior = await readState(config.browserState);
+    if (this.security && prior.pid) {
+      const identity = await this.security.process({ ...prior, executable: config.executable, profile: config.profile });
+      if (!prior.creationTime) await writeState(config.browserState, { ...prior, ...identity });
+    }
     const probe = port => browserEndpoint(port, { signal, fetchImpl: this.fetchImpl });
     let target = prior.profile === config.profile && processAlive(prior.pid) ? await probe(prior.port) : null;
     if (!target) {
@@ -140,6 +147,11 @@ export class PersistentBrowser {
         await delay(200, undefined, { signal });
       }
       if (!target) throw new WebUIError("BROWSER_TIMEOUT", "Timed out connecting to the dedicated browser.");
+    }
+    if (this.security) {
+      const state = await readState(config.browserState);
+      const identity = await this.security.process({ ...state, executable: config.executable, profile: config.profile });
+      if (!state.creationTime) await writeState(config.browserState, { ...state, ...identity });
     }
     signal?.throwIfAborted();
     const started = Date.now();

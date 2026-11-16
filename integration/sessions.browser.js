@@ -10,12 +10,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { PersistentBrowser, readState, processAlive } from '../src/shared/persistent-browser.js';
 import { controlRequest } from '../src/shared/control.js';
+import { secureNewFixture } from './private-fixture.js';
 let chrome;
 before(async () => { chrome = await chromium.launch({ executablePath: geminiConfig().executable || chromium.executablePath(), headless: true }); });
 after(async () => { await chrome?.close(); });
 
 test('controller timeout and disconnect preserve the dedicated browser, tab and draft', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'persistent-browser-fixture-'));
+  await secureNewFixture(directory);
   const runtime = new PersistentBrowser({
     profile: path.join(directory, 'profile'), browserState: path.join(directory, 'browser-state.json'),
     executable: geminiConfig().executable || chromium.executablePath(), url: 'about:blank', headless: true, actionTimeout: 10000,

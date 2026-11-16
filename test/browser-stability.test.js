@@ -44,7 +44,7 @@ test('endpoint probes enforce a local deadline and reject a foreign debugging so
 test('a stalled CDP attach times out without spawning another browser and disposes its late controller', async t => {
   const { config } = await fixture(t);
   let resolve, closes = 0, attempts = 0;
-  const runtime = new PersistentBrowser(config, { fetchImpl, connect: () => { attempts++; return new Promise(done => { resolve = done; }); }, spawnImpl: () => assert.fail('must reuse live browser') });
+  const runtime = new PersistentBrowser(config, { security: null, fetchImpl, connect: () => { attempts++; return new Promise(done => { resolve = done; }); }, spawnImpl: () => assert.fail('must reuse live browser') });
   await assert.rejects(runtime.connect(), { code: 'CONTROL_CONNECT_TIMEOUT' });
   await assert.rejects(runtime.connect(), { code: 'CONTROL_BUSY' });
   const browser = new EventEmitter(); browser.close = async () => { closes++; };
@@ -57,7 +57,7 @@ test('a stalled CDP attach times out without spawning another browser and dispos
 test('aborting during attach does not publish a late context or kill the dedicated process', async t => {
   const { config } = await fixture(t);
   let resolve, closes = 0;
-  const runtime = new PersistentBrowser(config, { fetchImpl, connect: () => new Promise(done => { resolve = done; }) });
+  const runtime = new PersistentBrowser(config, { security: null, fetchImpl, connect: () => new Promise(done => { resolve = done; }) });
   const signal = new AbortController();
   const attaching = runtime.connect(signal.signal);
   while (!resolve) await new Promise(setImmediate);
@@ -70,7 +70,7 @@ test('aborting during attach does not publish a late context or kill the dedicat
 test('failed cleanup of a late controller blocks another attachment', async t => {
   const { config } = await fixture(t);
   let resolve, attempts = 0;
-  const runtime = new PersistentBrowser(config, { fetchImpl, connect: () => {
+  const runtime = new PersistentBrowser(config, { security: null, fetchImpl, connect: () => {
     attempts++;
     return new Promise(done => { resolve = done; });
   } });
@@ -86,7 +86,7 @@ test('live unreachable or mismatched profiles fail closed before launching', asy
   const { config } = await fixture(t);
   for (const profile of [config.profile, 'another-profile']) {
     await writeState(config.browserState, { profile, pid: process.pid, port: 12345 });
-    const runtime = new PersistentBrowser(config, { fetchImpl: async () => { throw Error('offline'); }, spawnImpl: () => assert.fail('duplicate launch') });
+    const runtime = new PersistentBrowser(config, { security: null, fetchImpl: async () => { throw Error('offline'); }, spawnImpl: () => assert.fail('duplicate launch') });
     await assert.rejects(runtime.connect(), { code: 'BROWSER_UNREACHABLE' });
   }
 });
