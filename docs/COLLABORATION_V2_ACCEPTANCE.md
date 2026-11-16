@@ -33,3 +33,22 @@ Run [43906307224](https://github.com/jmwangde3/chatgpt-web-mcp/actions/runs/4390
 A review found that a late-installed window capture guard could run after a pre-existing same-target handler. This invalidated the old no-send proof; document-start installation plus runtime CDP listener-order proof replaces that approach. A new run is required. No production deployment has occurred.
 
 Saved Windows process state that cannot be verified (including stale/dead PIDs) deliberately refuses connection and preserves the state/profile for explicit recovery. Live-process CDP disconnect/reconnect is tested. Automatic replacement after a browser crash is not claimed safe or verified.
+
+## A3 successful gate / A4 toolsets
+
+Run [43908050033](https://github.com/jmwangde3/chatgpt-web-mcp/actions/runs/43908050033) at 8c8a7c7: all four Ubuntu/Windows unit+browser jobs SUCCESS. A4 production changes started after this gate.
+
+- Default `full` preserves63 baseline tool names and exact tool-definition hashes; `unified` exposes only the17 existing unified tools with unchanged schemas. Invalid configuration fails startup. Instructions match the actual registration.
+- Actual stdio MCP tools/list tests passed in full, unset/default, unified, and invalid cases. No browser executable existed in the isolated test configuration; no profile/state artifacts were created. Both full/unified smoke passed after explicitly forwarding the toolset environment to the client child process.
+- The existing smoke client's SDK transport omitted custom environment variables by default; explicit environment forwarding was necessary to test unified rather than silently launching full.
+
+| Actual compact tools/list definitions | full | unified |
+|---|---:|---:|
+| tool count |63|17|
+| UTF-8 bytes including descriptions |34147|12057|
+| characters including descriptions |30351|12055|
+| input-schema/name JSON bytes |19865|7399|
+| token heuristic (characters/4, rounded up) |7588|3014|
+| instructions characters |1176|833|
+
+These are serialized definition measurements, not Codex billed-token measurements or Local/GitHub review-workflow savings. Run `node scripts/measure-toolsets.js` to reproduce. No tokenizer dependency was added and the user's runtime configuration remains unchanged.

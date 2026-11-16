@@ -192,6 +192,10 @@ These values can be changed without editing source code:
 | `CHATGPT_WEB_MAX_CONVERSATION_TURNS` | `40` |
 | `CHATGPT_WEB_CONTEXT_ARCHIVE_DIR` | `~/.chatgpt-web-mcp/conversation-context` |
 
+`CHATGPT_WEB_MCP_TOOLSET` defaults to `full`, preserving compatibility with all existing tools: 17 `chat_*`, 29 `chatgpt_*`, and 17 `gemini_*` tools. Explicitly set it to `unified` in this MCP connection's environment and restart the connection to register only the existing 17 `chat_*` tools. Provider-specific tools are not registered in that mode. Legacy upload, diagnostic, and other provider-specific functions without a unified replacement are unavailable through those legacy tools in `unified`; this mode does not imply complete feature parity.
+
+Both modes retain the same `request_id` deduplication, `task_id` recovery, and `session_id` binding rules. `tools/list` does not launch a browser. Upgrading does not enable `unified` for you or change global user configuration. [.env.example](.env.example) shows only the default `full` value.
+
 See [.env.example](.env.example). The project does not automatically load `.env`; inject variables through the MCP client, shell, or operating system.
 
 ## Optional refresh before a new chat

@@ -211,3 +211,10 @@ export const CONTEXT_ARCHIVE_DIR = path.resolve(
 );
 
 export const MAX_HISTORY_RESULTS = 50;
+
+// Tool registration is opt-in; preserve all legacy tools by default.
+export function mcpToolset(env = process.env) {
+  const value = env.CHATGPT_WEB_MCP_TOOLSET ?? 'full';
+  if (!['full', 'unified'].includes(value)) throw new Error('CHATGPT_WEB_MCP_TOOLSET must be full or unified.');
+  return value;
+}

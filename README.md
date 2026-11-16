@@ -288,6 +288,10 @@ chatgpt-web-mcp help     显示帮助
 
 ## 其他环境变量
 
+`CHATGPT_WEB_MCP_TOOLSET` 默认为 `full`，保持完整工具集兼容：注册现有 17 个 `chat_*`、29 个 `chatgpt_*` 和 17 个 `gemini_*` 工具。可在该 MCP 连接的环境配置中显式设为 `unified`，重启连接后仅注册这 17 个 `chat_*` 工具，不注册平台专属工具。尚未由统一工具替代的旧专属上传、诊断等功能在 `unified` 下不可通过这些旧工具调用；此模式不代表旧功能均已有统一替代。
+
+两种模式的 `request_id` 去重、`task_id` 恢复读取及 `session_id` 会话绑定规则不变；`tools/list` 不启动浏览器。升级不会替用户启用 `unified`，也不修改用户全局配置。[.env.example](.env.example) 只示例默认 `full`；项目不自动读取 `.env`，请通过 MCP 客户端环境配置注入变量。
+
 - `CHATGPT_WEB_CHROME`：浏览器可执行文件绝对路径
 - `CHATGPT_WEB_PROFILE`：专用浏览器配置目录
 - `CHATGPT_WEB_HEADLESS`：是否无界面运行，默认 `false`
