@@ -36,7 +36,9 @@
 |P1双平台浏览器CI|PASS（已记录版本）|[20069e5的CI43915197406](https://github.com/jmwangde3/chatgpt-web-mcp/actions/runs/43915197406)四任务全绿；此历史结果不证明围栏补充及后续新提交已在云端通过|
 |P2 full/unified|PASS|真实stdio MCP的full/default/unified/invalid启动测试；63个基线工具及全部定义哈希一致；unified仅17个既有chat_*；两种smoke通过|
 
-最新本地完整单元：**221/221**；原完整浏览器106项在云端两平台通过，并另行执行19项发送与5项Windows专项。最新smoke与pack dry-run通过，打包54文件、155.6kB；git diff --check通过。
+最新本地完整单元：**221/221**；本轮完整浏览器**106/106**通过，另行执行19项发送、5项Windows安全及18项围栏专项。full/unified smoke与pack dry-run通过；git diff --check通过。
+
+围栏补充源码提交为`2a2bfeff606849646116029f94d12956d6c0a521`，双平台结果见[补充CI43935043574](https://github.com/jmwangde3/chatgpt-web-mcp/actions/runs/43935043574)，具体状态以该次运行记录为准；后续仅报告文字更新不改变该源码版本。
 
 Local分批的真实页面将两个Python围栏渲染为PRE/CODE，原inline候选不足以确认全文身份，首批任务因此进入uncertain。`src/browser.js`仅补充该已观察结构的保守围栏还原：最后用户消息、明确PRE及CODE复制标志、可见且无嵌套、最多32块/100k字符、单个完整候选；`matchesUserPrompt`和`textHash`全文匹配规则未改，没有截断或模糊匹配兜底。按主Agent本轮执行记录，围栏新专项18项，合并旧30项为**48/48**；全部补充专项为**18＋19＋5＝42/42**。本地单元仍**221/221**；full/unified smoke分别63/17工具，退出码均0。上述新增本地结果不等于云端新提交已经绿。
 
@@ -156,6 +158,6 @@ G06–G09的退出码、远端SHA/无分支证据及动作见[真实Git边界记
 
 剩余：G03真实403/私库无授权拒绝仍未实测；G11无效SHA与G14缺文件真实任务仍超时，等待用户是否延长，保持待验。服务端推送权限拒绝不在本次客户端pre-push证据内。模型极限压力及精确账单Token仍未实测；本次10,000字符预算分批不能替代这些证据。围栏补充及后续新提交的云端CI状态未据此核实。没有为了测试而撤销权限、公开私库、上传真实敏感内容或改GitHub默认分支。账号当前已登录，**不需要重复登录**。
 
-Git边界临时目录的cleanup原文为`not performed; only self-created temporary workspace retained`：**未清理，仍保留**，不得写成已清理。
+Git边界临时目录仅含本次生成的合成fixture，未清理，保留供追溯。缺文件/无效SHA任务及原编号见[待验记录](evidence/github-boundary-pending-v2.json)。
 
 保留公开/私有合成fixture仓库供追溯，不删除用户资源。Skills Manager远端目前跟踪此审查分支，合并后再按维护策略迁移；中心源仍唯一编辑。后续若要部署新服务，应走现有安装/更新流程，本次没有擅自切换全局配置。
