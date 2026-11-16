@@ -5,6 +5,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { sessionPage, sessionView, mergeSessionView, validateSessionId } from './shared/sessions.js';
 import { WebUIError, PersistentBrowser, acquireLock } from './shared/persistent-browser.js';
 import { controlRequest } from './shared/control.js';
+import { textHash, matchesUserPrompt } from './shared/user-message-identity.js';
 
 import {
   ACTION_TIMEOUT_MS,
@@ -113,6 +114,50 @@ export function readUserMessageDOMText(element) {
     }).join('\n\n');
   }
   return element.innerText || element.textContent || '';
+}
+
+// Renderer-side only: return at most one conservative reconstruction from the
+// same user node as the plain text. Never infer markup from ordinary text.
+export function readUserMessageIdentityDOM(element, selectors) {
+  const nodes = [...document.querySelectorAll(selectors)];
+  const lastId = element.getAttribute('data-message-id') || element.closest('[data-chatgpt-search-message-ids]')?.getAttribute('data-chatgpt-search-message-ids')?.trim().split(/\s+/u)[0] || element.getAttribute('data-testid') || element.id || null;
+  const rich = element.matches('.rich-text-user-turn') ? element : element.querySelector('.rich-text-user-turn');
+  const paragraphs = rich ? [...rich.children] : [];
+  const structural = paragraphs.length && paragraphs.every(node => node.tagName === 'P');
+  const visible = node => {
+    const style = getComputedStyle(node);
+    return node.getClientRects().length > 0 && style.visibility === 'visible' && style.display !== 'none' && Number(style.opacity) !== 0;
+  };
+  let leaf = element, wrapperDepth = 0, wrappersValid = !rich && element.tagName === 'DIV' && visible(element);
+  while (wrappersValid) {
+    const children = [...leaf.childNodes].filter(node => node.nodeType !== Node.TEXT_NODE || node.textContent.trim());
+    if (children.length !== 1 || children[0].nodeType !== Node.ELEMENT_NODE || children[0].tagName !== 'DIV') break;
+    if (wrapperDepth === 2 || !visible(children[0])) { wrappersValid = false; break; }
+    leaf = children[0]; wrapperDepth++;
+  }
+  const flat = wrappersValid && visible(leaf) && [...leaf.childNodes].every(node => {
+    if (node.nodeType === Node.TEXT_NODE) return true;
+    if (node.nodeType !== Node.ELEMENT_NODE || node.tagName !== 'CODE') return false;
+    const style = getComputedStyle(node);
+    return node.getClientRects().length === 1 && style.visibility === 'visible' && style.display !== 'none' && Number(style.opacity) !== 0;
+  });
+  const plainFallback = element.innerText || element.textContent || '';
+  if (!structural && !flat) return {count:nodes.length, isLast:nodes.at(-1) === element, lastId, lastText:plainFallback, identityCandidates:[]};
+  const copies = structural ? paragraphs.map(p => p.cloneNode(true)) : [leaf.cloneNode(true)];
+  for (const copy of copies) {
+    copy.querySelectorAll('[data-markdown-copy="exclude"]').forEach(node => node.remove());
+    copy.querySelectorAll('br').forEach(node => node.replaceWith('\n'));
+  }
+  const copiedPlain = copies.map(p => p.textContent || '').join('\n\n');
+  const plain = structural ? copiedPlain : plainFallback;
+  const codes = copies.flatMap(p => [...p.querySelectorAll('code')]);
+  const safe = plain.length <= 100000 && codes.length > 0 && codes.length <= 64 &&
+    (structural || plain.replace(/\s+/g, ' ').trim() === copiedPlain.replace(/\s+/g, ' ').trim()) &&
+    !copies.some(p => p.querySelector('pre')) && codes.every(code => !code.closest('pre') && !code.children.length && !!code.textContent && !/[`\r\n]/.test(code.textContent));
+  if (!safe) return {count:nodes.length, isLast:nodes.at(-1) === element, lastId, lastText:plain, identityCandidates:[]};
+  for (const code of codes) code.replaceWith(document.createTextNode('`' + code.textContent + '`'));
+  const candidate = copies.map(p => p.textContent || '').join('\n\n');
+  return {count:nodes.length, isLast:nodes.at(-1) === element, lastId, lastText:plain, identityCandidates:[candidate]};
 }
 
 export function isProModel(value) {
@@ -3465,11 +3510,15 @@ export class ChatGPTBrowser {
     }));
   }
 
-  async userMessageSnapshot() {
+  async userMessageSnapshot({ includeIdentityCandidates = false } = {}) {
     const users = this.userLocator();
     const count = await users.count();
     if (!count) return { count: 0, lastText: "", lastId: null };
     const last = users.last();
+    if (includeIdentityCandidates) {
+      const data = await last.evaluate(readUserMessageIdentityDOM, SELECTORS.userMessages.join(', '));
+      return { count: data.count, lastText: data.isLast ? data.lastText : '', lastId: data.lastId, identityCandidates: data.isLast ? data.identityCandidates : [] };
+    }
     const detail = await last.evaluate((element) => ({
       text: element.innerText || element.textContent || "",
       lastId:
@@ -3663,7 +3712,7 @@ export class ChatGPTBrowser {
       { timeout: ACTION_TIMEOUT_MS },
     ).catch(() => {});
 
-    const userAfterSnapshot = await this.userMessageSnapshot();
+    const userAfterSnapshot = await this.userMessageSnapshot({ includeIdentityCandidates: true });
     const userMessageAppendVerified =
       userAfterSnapshot.count > userBeforeSnapshot.count ||
       (Boolean(userBeforeSnapshot.lastId) &&
@@ -3675,8 +3724,8 @@ export class ChatGPTBrowser {
       userBeforeSnapshot.lastId === userAfterSnapshot.lastId;
     if (
       sameTurn &&
-      normalize(userBeforeSnapshot.lastText) !== normalize(userAfterSnapshot.lastText) &&
-      normalize(userAfterSnapshot.lastText) === normalize(promptText)
+      textHash(userBeforeSnapshot.lastText) !== textHash(userAfterSnapshot.lastText) &&
+      matchesUserPrompt(textHash(promptText), userAfterSnapshot.lastText, userAfterSnapshot.identityCandidates)
     ) {
       throw new ChatGPTWebError(
         "发送后未创建新的用户消息，检测到原用户消息内容被替换；已停止后续网页操作。",
@@ -3691,7 +3740,7 @@ export class ChatGPTBrowser {
       );
     }
 
-    if (!userMessageAppendVerified || normalize(userAfterSnapshot.lastText) !== normalize(promptText)) {
+    if (!userMessageAppendVerified || !matchesUserPrompt(textHash(promptText), userAfterSnapshot.lastText, userAfterSnapshot.identityCandidates)) {
       const error = new ChatGPTWebError('发送后未确认新增的用户消息；已保留任务，请检查原页面，不要自动重发。', {
         code: 'SEND_UNCONFIRMED', userMessageCountBefore: userBefore, userMessageCountAfter: userAfterSnapshot.count,
       });
@@ -4438,7 +4487,7 @@ export class ChatGPTBrowser {
     };
   }
 
-  async getLatestResponse({ includeSettings = false, includeTranscript = true } = {}) {
+  async getLatestResponse({ includeSettings = false, includeTranscript = true, includeIdentityCandidates = false } = {}) {
     const page = await this.page();
     const body = await page.locator("body").innerText().catch(() => "");
     const rateLimit = classifyRateLimitText(body);
@@ -4493,10 +4542,13 @@ export class ChatGPTBrowser {
       : null;
     const userCount = transcript?.userMessageCount ?? renderedUserCount;
     const assistantCount = transcript?.assistantMessageCount ?? renderedAssistantCount;
+    const snapshotURL = page.url();
+    const identitySnapshot = includeIdentityCandidates && !transcript && renderedUserCount ? await this.userMessageSnapshot({ includeIdentityCandidates: true }) : null;
+    const identityValid = Boolean(identitySnapshot && identitySnapshot.count === renderedUserCount && snapshotURL === page.url() && identitySnapshot.lastText);
     const latestUserText = transcript
       ? transcript.messages.findLast((message) => message.author === "user")?.text.trim() || null
       : renderedUserCount
-        ? (await this.controlRead(user.last().evaluate(readUserMessageDOMText))).trim()
+        ? identitySnapshot ? identitySnapshot.lastText.trim() : (await this.controlRead(user.last().evaluate(readUserMessageDOMText))).trim()
         : null;
     const latestAssistantText = transcript
       ? transcript.messages.findLast((message) => message.author === "assistant")?.text.trim() || null
@@ -4515,6 +4567,7 @@ export class ChatGPTBrowser {
       url: page.url(),
       conversationId: conversationIdFromUrl(page.url()),
       lastUserMessage: latestUserText,
+      ...(includeIdentityCandidates ? { identityCandidates: identityValid ? identitySnapshot.identityCandidates : [], identitySnapshotValid: identityValid } : {}),
       userMessageCount: userCount,
       response: latestAssistantText,
       assistantMessageCount: assistantCount,

@@ -220,6 +220,62 @@ test('uncertain delivery reconciles without another send', async (t) => {
   assert.equal((await f.kernel.result(task.task_id)).state, 'completed'); assert.equal(f.sends(), 1);
 });
 
+test('inline-code identity candidate supports late acknowledgement and recovery without leaking or resending', async t => {
+  const f = await fixture(t, 'chatgpt');
+  const input = {...f.input, prompt:'请核对 `alpha` 和 `Beta`。'};
+  f.adapter.send = async ({prompt}) => { f.page.userCount++; f.page.lastUser = '请核对 alpha 和 Beta。'; f.page.identityCandidates = [prompt]; throw Object.assign(new Error('ack delayed'), {code:'SEND_UNCONFIRMED'}); };
+  const sent = await f.kernel.send(input);
+  assert.equal(sent.state, 'submitted');
+  assert.equal('identityCandidates' in sent, false);
+  const journal = await readState(f.journal);
+  assert.equal(JSON.stringify(journal).includes('identityCandidates'), false);
+  assert.equal((await f.kernel.send(input)).replayed, true);
+  Object.assign(f.page, {responseCount:1, busy:false, complete:true, text:'done'});
+  const result = await f.kernel.result(sent.task_id);
+  assert.equal(result.state, 'completed'); assert.equal(result.response.text, 'done');
+  assert.equal('identityCandidates' in result, false); assert.equal(f.page.userCount, 1);
+});
+
+test('candidate must match entire original prompt and keep turn and session guards', async t => {
+  for (const candidate of ['Use `alpha`!', 'Use `Alpha`.', 'Use alpha.']) {
+    const f = await fixture(t, 'chatgpt');
+    const input = {...f.input, prompt:'Use `alpha`.'};
+    const task = await f.kernel.send(input);
+    Object.assign(f.page, {lastUser:'Use alpha.', identityCandidates:[candidate], responseCount:1, busy:false, complete:true, text:'answer'});
+    const result = await f.kernel.result(task.task_id);
+    assert.equal(result.state, 'uncertain'); assert.equal(result.error.code, 'SEND_UNCONFIRMED');
+  }
+  const f = await fixture(t, 'chatgpt'), input = {...f.input, prompt:'Use `alpha`.'};
+  const task = await f.kernel.send(input);
+  Object.assign(f.page, {url:'https://example.com/other', lastUser:'Use alpha.', identityCandidates:[input.prompt], responseCount:1, busy:false, complete:true, text:'answer'});
+  assert.equal((await f.kernel.result(task.task_id)).error.code, 'CONVERSATION_CHANGED');
+});
+
+test('identity candidate never bypasses user-turn count and is ignored for Gemini', async t => {
+  for (const id of ['chatgpt', 'gemini']) {
+    const f = await fixture(t, id), input = {...f.input, prompt:'Use `alpha`.'};
+    const task = await f.kernel.send(input);
+    Object.assign(f.page, {userCount: id === 'chatgpt' ? 2 : 1, lastUser:'Use alpha.', identityCandidates:[input.prompt], responseCount:1, busy:false, complete:true, text:'answer'});
+    const result = await f.kernel.result(task.task_id);
+    assert.equal(result.state, 'uncertain'); assert.equal(result.error.code, 'SEND_UNCONFIRMED');
+  }
+});
+
+test('retry target identity accepts the same complete inline-code candidate only', async t => {
+  const f = await fixture(t, 'chatgpt'), input = {...f.input, prompt:'Use `alpha`.'};
+  const task = await f.kernel.send(input);
+  Object.assign(f.page, {lastUser:'Use alpha.', identityCandidates:[input.prompt], responseCount:1, busy:false, complete:true, text:'answer', model:'model'});
+  assert.equal((await f.kernel.result(task.task_id)).state, 'completed');
+  let clicks = 0;
+  f.adapter.prepareRetry = async () => async () => {clicks++; return {started:true};};
+  f.page.identityCandidates = ['Use `Alpha`.'];
+  await assert.rejects(f.kernel.retry(task.task_id), {code:'RETRY_TARGET_CHANGED'});
+  assert.equal(clicks, 0);
+  f.page.identityCandidates = [input.prompt];
+  const retry = await f.kernel.retry(task.task_id);
+  assert.equal(retry.retry_count, 1); assert.equal(clicks, 1); assert.equal(f.sends(), 1);
+});
+
 test('staged send failures before the click boundary do not reserve an uncertain task', async t => {
   const f = await fixture(t);
   f.adapter.stagedSend = true;

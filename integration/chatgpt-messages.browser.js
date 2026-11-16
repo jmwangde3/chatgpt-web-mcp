@@ -6,11 +6,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
-import { ChatGPTBrowser } from '../src/browser.js';
+import { ChatGPTBrowser, readUserMessageIdentityDOM } from '../src/browser.js';
 import { SELECTORS } from '../src/selectors.js';
 import { geminiConfig } from '../src/gemini/config.js';
 import { TaskKernel, textHash } from '../src/core/tasks.js';
 import { chatgptProvider } from '../src/providers/adapters.js';
+import { readState } from '../src/shared/persistent-browser.js';
 
 let chrome;
 before(async () => {
@@ -252,6 +253,71 @@ test('rich paragraph mention chips preserve adjacent punctuation and real whites
   assert.notEqual(textHash(snapshot.lastText), textHash(prompt.replace('spaced words', 'spacedwords')));
 });
 
+test('inline code identity uses one bounded candidate without altering DOM or plain output', async t => {
+  const {page, reader} = await fixture(t, newUser('code','placeholder'));
+  const node = page.locator(userSelector).last();
+  for (const count of [1,2,4]) {
+    const pieces = Array.from({length:count}, (_, i) => `代码<code>item${i}</code>`).join('、');
+    await node.evaluate((element, pieces) => { element.innerHTML = `<div class="rich-text-user-turn"><p>中文 ${pieces}。</p><p>链接 <a href="https://example.org">https://example.org</a><br>结束</p></div>`; }, pieces);
+    const htmlBefore = await node.innerHTML();
+    const publicSnapshot = await ChatGPTBrowser.prototype.userMessageSnapshot.call(reader);
+    const identity = await node.evaluate(readUserMessageIdentityDOM, userSelector);
+    const expected = `中文 ${Array.from({length:count}, (_,i)=>`代码\`item${i}\``).join('、')}。\n\n链接 https://example.org\n结束`;
+    assert.equal(identity.lastText, publicSnapshot.lastText);
+    assert.equal(identity.identityCandidates.length, 1);
+    assert.equal(textHash(identity.identityCandidates[0]), textHash(expected));
+    assert.equal(await node.innerHTML(), htmlBefore);
+    assert.equal('identityCandidates' in publicSnapshot, false);
+  }
+  for (const body of ['<pre><code>hello</code></pre>', '<code>a`b</code>', '<code><strong>x</strong></code>', '<code></code>', 'ordinary text', Array(65).fill('<code>x</code>').join('')]) {
+    await node.evaluate((element, body) => { element.innerHTML = `<div class="rich-text-user-turn"><p>${body}</p></div>`; }, body);
+    const identity = await node.evaluate(readUserMessageIdentityDOM, userSelector);
+    assert.deepEqual(identity.identityCandidates, []);
+  }
+});
+
+test('flat user DIV produces a conservative inline-code candidate for two and four nodes', async t => {
+  const {page, reader} = await fixture(t, newUser('flat','placeholder'));
+  const node = page.locator(userSelector).last();
+  for (const count of [2,4]) {
+    const markup = Array.from({length:count}, (_,i)=>`<code>part${i}</code>`).join(' / ');
+    await node.evaluate((element, markup) => {element.innerHTML = `中文 ${markup}。 https://example.org/end`;}, markup);
+    const before = await node.innerHTML();
+    const plain = await ChatGPTBrowser.prototype.userMessageSnapshot.call(reader);
+    const snapshot = await ChatGPTBrowser.prototype.userMessageSnapshot.call(reader, {includeIdentityCandidates:true});
+    const expected = `中文 ${Array.from({length:count}, (_,i)=>`\`part${i}\``).join(' / ')}。 https://example.org/end`;
+    assert.equal(snapshot.lastText, plain.lastText); assert.equal(textHash(snapshot.identityCandidates[0]), textHash(expected));
+    assert.equal(await node.innerHTML(), before);
+  }
+  for (const markup of ['extra<div>nested <code>x</code></div>', '<span><code>x</code></span>', '<a href="/x">x</a><code>y</code>', '<code>x</code><br>text', '<code style="display:none">x</code>', '<code style="visibility:hidden">x</code>', '<code style="opacity:0">x</code>', '<span data-markdown-copy="exclude">icon</span><code>x</code>', '<code>x`y</code>', '<pre><code>x</code></pre>', '<strong><code>x</code></strong>']) {
+    await node.evaluate((element, html) => {element.innerHTML=html;}, markup);
+    assert.deepEqual((await ChatGPTBrowser.prototype.userMessageSnapshot.call(reader, {includeIdentityCandidates:true})).identityCandidates, []);
+  }
+});
+
+test('two transparent DIV wrappers preserve bounded inline-code identity', async t => {
+  const {page, reader} = await fixture(t, newUser('wrapped','placeholder'));
+  const node = page.locator(userSelector).last();
+  const wrapped = '<div><div class="text-size-chat whitespace-pre-wrap" dir="auto">比较 <code>alpha</code>、<code>beta</code>、<code>gamma</code>、<code>delta</code>。</div></div>';
+  await node.evaluate((element, markup) => {element.innerHTML=markup;}, wrapped);
+  const before = await node.innerHTML();
+  const result = await ChatGPTBrowser.prototype.userMessageSnapshot.call(reader, {includeIdentityCandidates:true});
+  assert.equal(result.lastText, '比较 alpha、beta、gamma、delta。');
+  assert.equal(result.identityCandidates[0], '比较 `alpha`、`beta`、`gamma`、`delta`。');
+  assert.equal(await node.innerHTML(), before);
+  for (const markup of [
+    'extra<div><div>比较 <code>alpha</code></div></div>',
+    '<div><span>extra</span><div>比较 <code>alpha</code></div></div>',
+    '<div style="display:none"><div>比较 <code>alpha</code></div></div>',
+    '<div><div><div><div><div>比较 <code>alpha</code></div></div></div></div></div>',
+    '<div><div>比较 <code>alpha</code><br>换行</div></div>',
+  ]) {
+    await node.evaluate((element, html) => {element.innerHTML=html;}, markup);
+    const rejected = await ChatGPTBrowser.prototype.userMessageSnapshot.call(reader, {includeIdentityCandidates:true});
+    assert.deepEqual(rejected.identityCandidates, []);
+  }
+});
+
 test('semantic IDs prefer selection ID and split duplicate search IDs without reordering', async (t) => {
   const { page, messages } = await fixture(t,
     newUser('u1', 'One') + newAssistant('a1', 'First') +
@@ -347,13 +413,15 @@ async function taskFixture(t) {
     settleManagedGeneration: async () => { settled++; },
     // Project real DOM extraction into the adapter's snapshot boundary. Calling
     // the full browser getter here would access the user's live runtime files.
-    getLatestResponse: async () => {
+    getLatestResponse: async ({includeIdentityCandidates = false} = {}) => {
       const messages = await f.messages();
       const users = messages.filter((message) => message.author === 'user');
       const assistants = messages.filter((message) => message.author === 'assistant');
+      const identity = includeIdentityCandidates && users.length ? await ChatGPTBrowser.prototype.userMessageSnapshot.call(f.reader, {includeIdentityCandidates:true}) : null;
       return {
         url, userMessageCount: users.length, assistantMessageCount: assistants.length,
         lastUserMessage: users.at(-1)?.text || '', response: assistants.at(-1)?.text || '',
+        ...(identity ? {identityCandidates:identity.identityCandidates, identitySnapshotValid:identity.count === users.length} : {}),
         generating: !!await f.page.locator(SELECTORS.stopButton.join(', ')).count() || (assistants.length ? await f.streaming() : false),
         model: 'offline-fixture',
       };
@@ -364,6 +432,19 @@ async function taskFixture(t) {
   const input = { provider: 'chatgpt', request_id: 'offline-one-send', prompt: '完整的独立测试提示\n包括最后一行' };
   return { ...f, kernel, provider, directory, input, sends: () => sends, settled: () => settled };
 }
+
+test('wrapped inline-code message completes the original durable task and replays without sending again', async t => {
+  const f = await taskFixture(t);
+  const input = {...f.input, prompt:'核对 `alpha` 和 `beta`。'};
+  const task = await f.kernel.send(input);
+  assert.equal(task.state, 'submitted'); assert.equal(f.sends(), 1);
+  await f.page.setContent(html(newUser('flat-task','placeholder') + newAssistant('answer','done')));
+  await f.page.locator(userSelector).last().evaluate(node => {node.innerHTML='<div><div class="text-size-chat whitespace-pre-wrap" dir="auto">核对 <code>alpha</code> 和 <code>beta</code>。</div></div>';});
+  const result = await f.kernel.result(task.task_id);
+  assert.equal(result.state, 'completed'); assert.equal(result.response.text, 'done');
+  assert.equal((await f.kernel.send(input)).replayed, true); assert.equal(f.sends(), 1);
+  assert.equal(JSON.stringify(await readState(path.join(f.directory, 'chatgpt', 'tasks.json'))).includes('identityCandidates'), false);
+});
 
 test('zero observations become uncertain; the original durable request recovers from semantic DOM without resending', async (t) => {
   const f = await taskFixture(t);

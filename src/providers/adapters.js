@@ -76,12 +76,12 @@ export function chatgptProvider(browser) {
       return sent;
     },
     async inspect() {
-      const s = await browser.getLatestResponse({ includeTranscript: false });
+      const s = await browser.getLatestResponse({ includeTranscript: false, includeIdentityCandidates: true });
       // A persisted breaker gates actions, not observation. The task kernel still
       // verifies the conversation and exact user turn before accepting this text.
       const readableAnswer = !!s.response && !s.generating && !classifyRateLimitText(s.response).limited;
       if (s.rateLimited && !readableAnswer) throw new WebUIError('RATE_LIMITED', 'ChatGPT displays a rate-limit warning without a completed answer. No retry was sent.');
-      return { url: s.url, userCount: s.userMessageCount, responseCount: s.assistantMessageCount, lastUser: s.lastUserMessage || '', text: s.response || '', busy: s.generating, complete: !!s.response && !s.generating, model: s.model };
+      return { url: s.url, userCount: s.userMessageCount, responseCount: s.assistantMessageCount, lastUser: s.identitySnapshotValid === false ? '' : s.lastUserMessage || '', identityCandidates: s.identitySnapshotValid === false ? [] : s.identityCandidates || [], text: s.response || '', busy: s.generating, complete: !!s.response && !s.generating, model: s.model };
     },
     settle: () => browser.settleManagedGeneration(),
     cancel: () => stop(browser, chatgptSelectors.stopButton),

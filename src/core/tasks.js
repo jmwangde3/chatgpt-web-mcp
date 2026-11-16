@@ -6,8 +6,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { acquireLock, readState, writeState, WebUIError } from '../shared/persistent-browser.js';
 import { recoveryFor } from './recovery.js';
 import { validateSessionId } from '../shared/sessions.js';
+import { textHash, matchesUserPrompt } from '../shared/user-message-identity.js';
 
-export const textHash = (text = '') => createHash('sha256').update(text.replace(/\s+/g, ' ').trim()).digest('hex');
+export { textHash };
 const fingerprint = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const terminal = new Set(['completed', 'cancelled', 'failed', 'abandoned']);
 export function canonicalURL(value) { const u = new URL(value); return u.origin + u.pathname.replace(/\/$/, ''); }
@@ -150,12 +151,12 @@ export class TaskKernel {
             if (error.code !== 'SEND_UNCONFIRMED') throw error;
             const observed = await adapter.inspect();
             if (!adapter.isRoot(baselineURL) && !adapter.isProvisional?.(baselineURL) && canonicalURL(observed.url) !== baselineURL) throw error;
-            if (observed.userCount !== task.baseline.userCount + 1 || textHash(observed.lastUser) !== task.promptHash) throw error;
+            if (observed.userCount !== task.baseline.userCount + 1 || !matchesUserPrompt(task.promptHash, observed.lastUser, id === 'chatgpt' ? observed.identityCandidates : [])) throw error;
             sent = { url: observed.url };
           }
           task.state = 'submitted'; task.submitted_at = Date.now(); task.updated_at = task.submitted_at;
           const acknowledgement = adapter.restore ? await adapter.inspect() : null;
-          const identityConfirmed = !acknowledgement || (acknowledgement.userCount === task.baseline.userCount + 1 && textHash(acknowledgement.lastUser) === task.promptHash);
+          const identityConfirmed = !acknowledgement || (acknowledgement.userCount === task.baseline.userCount + 1 && matchesUserPrompt(task.promptHash, acknowledgement.lastUser, id === 'chatgpt' ? acknowledgement.identityCandidates : []));
           const sentURL = acknowledgement?.url || sent.url;
           if (identityConfirmed && sentURL && !adapter.isRoot(canonicalURL(sentURL)) && !adapter.isProvisional?.(sentURL)) task.conversation_url = canonicalURL(sentURL);
           await save();
@@ -186,7 +187,7 @@ export class TaskKernel {
         const expected = task.conversation_url || task.response.url;
         if (!expected || canonicalURL(observed.url) !== canonicalURL(expected)) throw new WebUIError('CONVERSATION_CHANGED', 'Open the original task conversation before retrying.');
         if (Object.values(state.tasks).some(t => t.task_id !== taskId && !terminal.has(t.state) && [t.conversation_url, t.baseline?.url].some(url => url && canonicalURL(url) === canonicalURL(expected)))) throw new WebUIError('CONVERSATION_ACTIVE', 'Another task is using this conversation.');
-        if (observed.busy || !observed.complete || observed.userCount !== task.baseline.userCount + 1 || textHash(observed.lastUser) !== task.promptHash || observed.text !== task.response.text) throw new WebUIError('RETRY_TARGET_CHANGED', 'The page no longer matches the completed task response.');
+        if (observed.busy || !observed.complete || observed.userCount !== task.baseline.userCount + 1 || !matchesUserPrompt(task.promptHash, observed.lastUser, id === 'chatgpt' ? observed.identityCandidates : []) || observed.text !== task.response.text) throw new WebUIError('RETRY_TARGET_CHANGED', 'The page no longer matches the completed task response.');
         if (task.response.model && observed.model !== task.response.model) throw new WebUIError('RETRY_MODEL_CHANGED', 'The selected model or thinking setting changed; restore it before retrying.');
         const clickRetry = await adapter.prepareRetry(observed);
         task.previous_response = task.response; task.response = null;
@@ -242,7 +243,7 @@ export class TaskKernel {
           signal?.throwIfAborted();
           const url = canonicalURL(observed.url);
           if (url !== expected && !root) throw new WebUIError('CONVERSATION_CHANGED', 'Open the task conversation before resuming it.');
-          const acknowledged = observed.userCount === task.baseline.userCount + 1 && textHash(observed.lastUser) === task.promptHash;
+          const acknowledged = observed.userCount === task.baseline.userCount + 1 && matchesUserPrompt(task.promptHash, observed.lastUser, id === 'chatgpt' ? observed.identityCandidates : []);
           // UI acknowledgement may arrive after submitPrompt(wait:false).
           // Briefly keep observing an unchanged baseline, without a retry.
           if (!acknowledged && !cancel && task.state === 'submitted' && task.submitted_at && Date.now() - task.submitted_at < 20000 && observed.userCount === task.baseline.userCount && observed.responseCount === task.baseline.responseCount) return;
