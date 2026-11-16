@@ -1,7 +1,65 @@
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
-import { guardedSend } from '../src/shared/send-guard.js';
+import { guardedSend, bootstrapSendGuard } from '../src/shared/send-guard.js';
+
+test('early guard blocks a later application window capture after the draft changes', async t => {
+ const f = await fixture(t);
+ await f.page.evaluate(() => {
+  window.appCaptureCount = 0;
+  window.addEventListener('click', () => {window.appCaptureCount++;}, true);
+ });
+ let clicks = 0;
+ await assert.rejects(guardedSend({...f, click: async button => {
+  clicks++;
+  await f.composer.fill('changed after guard activation');
+  await button.click();
+ }}), error => error.code === 'SEND_NOT_ATTEMPTED' && error.sendOutcome === 'not_attempted');
+ assert.equal(clicks, 1);
+ assert.deepEqual(await f.page.evaluate(() => [window.appCaptureCount, window.count]), [0, 0]);
+});
+
+test('a preexisting window capture prevents clicking even when a late guard is installed', async t => {
+ const context = await browser.newContext();
+ t.after(() => context.close());
+ await context.route('**/*', route => route.fulfill({contentType: 'text/html',
+  body: '<form><textarea>private fixture</textarea><button>Send</button></form>'}));
+ const page = await context.newPage();
+ await page.goto('https://chatgpt.com/c/early-capture');
+ // Materialize Playwright utilities before bootstrap; do not let their first
+ // initialization obscure the deliberately earlier application listener.
+ const composer = page.locator('textarea');
+ const expectedText = await composer.inputValue();
+ await page.evaluate(() => {
+  window.earlyCaptureCount = 0;
+  window.addEventListener('click', () => {window.earlyCaptureCount++;}, true);
+ });
+ await page.evaluate(bootstrapSendGuard);
+ let clicks = 0;
+ await assert.rejects(guardedSend({page, composer, button: page.locator('button'),
+  expectedText, expectedURL: page.url(), allowedOrigin: 'https://chatgpt.com',
+  click: async button => {clicks++; await button.click();},
+ }), error => error.code === 'SEND_NOT_ATTEMPTED' && error.sendOutcome === 'not_attempted');
+ assert.equal(clicks, 0);
+ assert.equal(await page.evaluate(() => window.earlyCaptureCount), 0);
+});
+
+test('an old page without bootstrap refuses to start the click callback', async t => {
+ const context = await browser.newContext();
+ t.after(() => context.close());
+ await context.route('**/*', route => route.fulfill({contentType: 'text/html',
+  body: '<form><textarea>private fixture</textarea><button>Send</button></form>'}));
+ const page = await context.newPage();
+ await page.goto('https://chatgpt.com/c/without-bootstrap');
+ const composer = page.locator('textarea');
+ assert.equal(await page.evaluate(() => typeof window.__webChatSendGate), 'undefined');
+ let clicks = 0;
+ await assert.rejects(guardedSend({page, composer, button: page.locator('button'),
+  expectedText: await composer.inputValue(), expectedURL: page.url(), allowedOrigin: 'https://chatgpt.com',
+  click: async button => {clicks++; await button.click();},
+ }), error => error.code === 'SEND_NOT_ATTEMPTED' && error.sendOutcome === 'not_attempted');
+ assert.equal(clicks, 0);
+});
 test('real cross-origin navigation invalidates the pinned send nodes without sending', async t => {
  const f = await fixture(t);
  await f.page.context().route('https://foreign.example/**', r => r.fulfill({
@@ -64,7 +122,7 @@ let browser;
 before(async()=>{ browser=await chromium.launch({headless:true}); });
 after(async()=>{await browser?.close();});
 async function fixture(t){
- const context=await browser.newContext(); t.after(()=>context.close());
+ const context=await browser.newContext(); await context.addInitScript(bootstrapSendGuard); t.after(()=>context.close());
  await context.route('**/*',r=>r.fulfill({contentType:'text/html',body:'<form><textarea>Ab c\nnext</textarea><button>Send</button></form>'}));
  const page=await context.newPage(); await page.goto('https://chatgpt.com/c/fixture');
  await page.evaluate(()=>{window.count=0; window.trusted=false; document.querySelector('form').onsubmit=e=>{e.preventDefault();window.count++};document.querySelector('button').onclick=e=>{window.trusted=e.isTrusted};});

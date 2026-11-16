@@ -1,4 +1,4 @@
-import { guardedSend } from './shared/send-guard.js';
+import { guardedSend, bootstrapSendGuard } from './shared/send-guard.js';
 import { answerTierControlDOM } from './shared/composer-controls.js';
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -1272,6 +1272,7 @@ export class ChatGPTBrowser {
         await this.siteAction('launch-chatgpt');
       }
       this.#context = await this.#runtime.connect(this.signal());
+      await this.#context.addInitScript(bootstrapSendGuard);
       openedChatGPTPage = this.#runtime.launched;
       if (openedChatGPTPage) await updateRuntimeState({ authenticatedUntil: 0 });
     } catch (error) {

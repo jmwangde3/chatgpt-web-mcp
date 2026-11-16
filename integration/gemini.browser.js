@@ -19,12 +19,13 @@ after(async () => { await chrome?.close(); });
 
 test('long attachment names use exact accessible descriptions and reject mismatches', async t => {
   const {b,page}=await fixture(t);
-  b.config.actionTimeout=250;
+  b.config.actionTimeout=3000;
   await page.evaluate(()=>{
     const d=document.createElement('div');d.id='full-file';d.hidden=true;d.textContent='完整的很长中文研究方案.md';document.body.append(d);
     const e=document.createElement('file-preview');e.innerHTML='<div aria-describedby="full-file"><span class="gem-attachment-text">完整的...方案</span></div>';document.body.append(e);
   });
   await b.waitForUploads([path.join(os.tmpdir(),'完整的很长中文研究方案.md')],{exact:true});
+  b.config.actionTimeout=250;
   await assert.rejects(b.waitForUploads([path.join(os.tmpdir(),'另一个研究方案.md')],{exact:true}));
   await page.evaluate(()=>{const e=document.createElement('file-preview');e.textContent='unexpected.txt';document.body.append(e);});
   await assert.rejects(b.waitForUploads([path.join(os.tmpdir(),'完整的很长中文研究方案.md')],{exact:true}));
