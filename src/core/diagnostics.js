@@ -2,7 +2,8 @@ import { verifyWindowsPaths, verifyWindowsProcess } from '../shared/windows-secu
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readState, processAlive } from '../shared/persistent-browser.js';
-import { validateJournal } from './tasks.js';
+import { validateJournal, journalStatistics } from './tasks.js';
+import { readLockSnapshot } from '../shared/locks.js';
 import { Installer, installDirectory } from '../maintenance.js';
 
 async function localState(file) {
@@ -41,12 +42,13 @@ export async function diagnose(kernel, ids = [...kernel.providers.keys()]) {
         if (state.pid) { await verifyWindowsProcess({ ...state, executable: config.executable, profile: config.profile }); check('browser_ownership', 'pass', 'VERIFIED', 'Sign-in is not checked.'); }
       } catch { check('browser_ownership', 'fail', 'BROWSER_IDENTITY_UNVERIFIED', 'Preserve state and inspect locally; no process was terminated.'); }
     }
-    for (const [name, file] of [['operation_lock', config?.operationLock], ['task_lock', path.join(kernel.directory, id, 'tasks.json.lock')]]) {
+    for (const [name, file] of [['operation_lock', config?.operationLock], ['task_lock', path.join(kernel.directory, id, 'tasks.json.lock')], ['runtime_lock', config?.runtimeState && config.runtimeState + '.lock']]) {
       if (!file) continue;
       try {
-        const owner = JSON.parse(await fs.readFile(file, 'utf8'));
-        if (!Number.isInteger(owner?.pid) || owner.pid < 1 || !owner.token) throw new Error();
-        check(name, 'warn', processAlive(owner.pid) ? 'IN_USE' : 'STALE_OWNER', 'Snapshot only. Wait for ongoing work; do not delete locks blindly.');
+        const owner = await readLockSnapshot(file);
+        if (!owner.exists) { check(name, 'pass', 'AVAILABLE', 'none'); continue; }
+        checks.push({ name, status: 'warn', code: owner.owner_state === 'ALIVE' ? 'IN_USE' : ['DEAD','PID_REUSED'].includes(owner.owner_state) ? 'STALE_OWNER' : 'UNREADABLE_LOCK', owner,
+          action: 'Snapshot only. Age is not reclamation authority. Restart an unresponsive live MCP owner; preserve unknown owners.' });
       } catch (error) {
         if (error.code === 'ENOENT') check(name, 'pass', 'AVAILABLE', 'none');
         else check(name, 'warn', 'UNREADABLE_LOCK', 'Lock may be initializing or damaged. Inspect locally before changing it.');
@@ -54,12 +56,16 @@ export async function diagnose(kernel, ids = [...kernel.providers.keys()]) {
     }
     try {
       const journal = validateJournal(await readState(path.join(kernel.directory, id, 'tasks.json')), id);
-      const counts = {};
-      for (const task of Object.values(journal.tasks)) counts[task.state] = (counts[task.state] || 0) + 1;
+      const statistics = journalStatistics(journal);
+      const counts = statistics.state_counts;
       const active = Object.values(journal.tasks).filter(t => !['completed', 'cancelled', 'failed', 'abandoned'].includes(t.state));
-      checks.push({ name: 'task_journal', status: active.length ? 'warn' : 'pass', code: active.length ? 'TASK_ACTIVE' : 'READABLE', counts, active_count: active.length, active_state: journal.active ? journal.tasks[journal.active].state : null, action: active.length ? 'Use chat_tasks, then chat_result for existing tasks. Independent work may use a new session_id; do not resend uncertain work.' : 'none' });
+      checks.push({ name: 'task_journal', status: active.length ? 'warn' : 'pass', code: active.length ? 'TASK_ACTIVE' : 'READABLE', counts, ...statistics, active_state: journal.active ? journal.tasks[journal.active].state : null, action: active.length ? 'Use chat_tasks, then chat_result for existing tasks. Independent work may use a new session_id; do not resend uncertain work.' : 'none' });
     } catch { check('task_journal', 'fail', 'INVALID_JOURNAL', 'Inspect and restore the local journal privately; preserve duplicate-request records.'); }
-    return { provider: id, ok: !checks.some((item) => item.status === 'fail'), checks };
+    const controllers = [];
+    for (const item of [adapter, ...[...(kernel.sessions?.values() || [])].filter(p => p.id === id)]) {
+      if (item.browser.controllerDiagnostics) controllers.push(await item.browser.controllerDiagnostics());
+    }
+    return { provider: id, ok: !checks.some((item) => item.status === 'fail'), checks, controllers };
   }));
   const nodeOK = Number(process.versions.node.split('.')[0]) >= 20;
   let installation;

@@ -31,6 +31,7 @@ export function isResponseFailure(text = '') {
 }
 
 export class GeminiBrowser {
+  controllerDiagnostics() { return this.runtime.controlDiagnostics?.() || Promise.resolve({controller_state:'DISCONNECTED'}); }
   constructor(config = geminiConfig(), runtime = new PersistentBrowser(config), { sessionId } = {}) {
     this.sessionId = validateSessionId(sessionId);
     this.config = config; this.runtime = runtime; this.queue = Promise.resolve();

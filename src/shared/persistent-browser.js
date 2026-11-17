@@ -7,7 +7,10 @@ import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright-core";
 import { controlRequest } from './control.js';
-import { browserDiagnostics } from './browser-diagnostics.js';
+import { browserDiagnostics, safeControlDiagnostics } from './browser-diagnostics.js';
+import { acquireLock, readLockSnapshot } from './locks.js';
+import { inspectProcessIdentity } from './process-identity.js';
+export { acquireLock } from './locks.js';
 
 export class WebUIError extends Error {
   constructor(code, message) { super(message); this.name = "WebUIError"; this.code = code; }
@@ -31,46 +34,6 @@ export function processAlive(pid) {
   if (!Number.isInteger(pid) || pid < 1) return false;
   try { process.kill(pid, 0); return true; }
   catch (error) { return error.code === "EPERM"; }
-}
-
-export async function acquireLock(file, { signal, timeout = 20000 } = {}) {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const deadline = Date.now() + timeout;
-  const token = randomUUID();
-  while (Date.now() < deadline) {
-    signal?.throwIfAborted();
-    let handle;
-    try {
-      handle = await fs.open(file, "wx", 0o600);
-      await handle.writeFile(JSON.stringify({ pid: process.pid, token }));
-      await handle.close();
-      return async () => {
-        if ((await readState(file)).token === token) await fs.unlink(file);
-      };
-    } catch (error) {
-      await handle?.close().catch(() => {});
-      if (error.code !== "EEXIST") throw error;
-      // Never delete an empty lock: its owner may still be writing metadata.
-      let owner;
-      try { owner = await readState(file); } catch { owner = {}; }
-      if (owner.pid && !processAlive(owner.pid)) {
-        // Serialize stale-lock reclamation so two contenders cannot unlink a
-        // newly acquired lock after both observing the same dead owner.
-        let reclaim;
-        try {
-          reclaim = await fs.open(`${file}.reclaim`, "wx", 0o600);
-          const current = await readState(file);
-          if (current.pid && !processAlive(current.pid)) await fs.unlink(file);
-        } catch (error) {
-          if (!["EEXIST", "ENOENT"].includes(error.code)) throw error;
-          await delay(100, undefined, { signal });
-        } finally {
-          if (reclaim) { await reclaim.close(); await fs.unlink(`${file}.reclaim`); }
-        }
-      } else await delay(100, undefined, { signal });
-    }
-  }
-  throw new WebUIError("BUSY", "Another browser operation is running, or its lock needs manual inspection.");
 }
 
 async function freePort() {
@@ -103,9 +66,40 @@ export class PersistentBrowser {
     this.connector = connect; this.fetchImpl = fetchImpl; this.spawnImpl = spawnImpl;
     this.diagnostic = browserDiagnostics(config.browserState);
     this.disconnecting = null; this.attaching = null; this.launched = false;
+    this.preparing = false; this.attachState = 'DISCONNECTED'; this.attachStartedAt = null; this.attachTimedOutAt = null;
   }
 
   async connect(signal) {
+    signal = signal || undefined;
+    signal?.throwIfAborted();
+    if (this.browser?.isConnected()) { this.attachState = 'CONNECTED'; return this.context; }
+    if (this.attaching || this.disconnecting || this.preparing) {
+      const error = new WebUIError('CONTROL_BUSY', 'The original controller attempt or cleanup is pending. Restart the MCP service if it remains unresponsive; preserve Chrome and the original task.');
+      error.safeDiagnostics = await this.controlDiagnostics(); throw error;
+    }
+    this.preparing = true; this.attachState = 'CONNECTING'; this.attachStartedAt = Date.now(); this.attachTimedOutAt = null;
+    try { return await this.connectOnce(signal); }
+    catch (error) {
+      if (this.attachState === 'CONNECTING' && !this.attaching) this.attachState = 'DISCONNECTED';
+      throw error;
+    } finally { this.preparing = false; }
+  }
+
+  async controlDiagnostics() {
+    const saved = await readState(this.config.browserState).catch(() => ({}));
+    const [operation, task] = await Promise.all([
+      this.config.operationLock ? readLockSnapshot(this.config.operationLock) : null,
+      this.config.taskLock ? readLockSnapshot(this.config.taskLock) : null,
+    ]);
+    return safeControlDiagnostics({ browser_state_pid: saved.pid, browser_state_port: saved.port,
+      endpoint_reachable: this.endpointReachable, controller_state: this.attachState,
+      attach_age_ms: this.attachStartedAt ? Date.now() - this.attachStartedAt : 0,
+      attach_started_at: this.attachStartedAt, attach_timed_out_at: this.attachTimedOutAt,
+      operation_lock_owner: operation, task_lock_owner: task,
+      restart_mcp_required: ['ATTACH_TIMEOUT_PENDING','CONTROLLER_POISONED'].includes(this.attachState) });
+  }
+
+  async connectOnce(signal) {
     signal = signal || undefined;
     signal?.throwIfAborted();
     if (this.browser?.isConnected()) return this.context;
@@ -116,7 +110,7 @@ export class PersistentBrowser {
     let prior = await readState(config.browserState);
     if (this.security && prior.pid) {
       const identity = await this.security.process({ ...prior, executable: config.executable, profile: config.profile });
-      if (!prior.creationTime || prior.pid !== identity.pid) { prior = { ...prior, ...identity }; await writeState(config.browserState, prior); }
+      if (prior.creationTime !== identity.creationTime || prior.processStartIdentity !== identity.processStartIdentity || prior.pid !== identity.pid) { prior = { ...prior, ...identity }; await writeState(config.browserState, prior); }
     }
     const probe = port => browserEndpoint(port, { signal, fetchImpl: this.fetchImpl });
     let target = prior.profile === config.profile && processAlive(prior.pid) ? await probe(prior.port) : null;
@@ -149,10 +143,11 @@ export class PersistentBrowser {
       }
       if (!target) throw new WebUIError("BROWSER_TIMEOUT", "Timed out connecting to the dedicated browser.");
     }
+    this.endpointReachable = Boolean(target);
     if (this.security) {
       const state = await readState(config.browserState);
       const identity = await this.security.process({ ...state, executable: config.executable, profile: config.profile });
-      if (!state.creationTime || state.pid !== identity.pid) await writeState(config.browserState, { ...state, ...identity });
+      if (state.creationTime !== identity.creationTime || state.processStartIdentity !== identity.processStartIdentity || state.pid !== identity.pid) await writeState(config.browserState, { ...state, ...identity });
     }
     signal?.throwIfAborted();
     const started = Date.now();
@@ -164,11 +159,15 @@ export class PersistentBrowser {
     // active controller or leak into the next operation.
     void attempt.then(async browser => {
       if (!accepted) await this.disconnectController(browser).catch(() => {});
-    }, () => {}).finally(() => { if (this.attaching === attempt) this.attaching = null; });
+    }, () => {}).finally(() => {
+      if (this.attaching === attempt) this.attaching = null;
+      if (!this.disconnecting) this.attachState = this.browser?.isConnected() ? 'CONNECTED' : 'DISCONNECTED';
+    });
     try {
       const browser = await controlRequest(attempt, { timeout: config.actionTimeout, signal, code: 'CONTROL_CONNECT_TIMEOUT', onInterrupt: () => { accepted = false; } });
       if (signal?.aborted) { accepted = false; await this.disconnectController(browser).catch(() => {}); signal.throwIfAborted(); }
       this.browser = browser;
+      this.attachState = 'CONNECTED';
       this.context = browser.contexts()[0];
       if (!this.context) { await this.disconnect(); throw new WebUIError("NO_CONTEXT", "The browser returned no default context."); }
       this.context.setDefaultTimeout(config.actionTimeout);
@@ -180,6 +179,10 @@ export class PersistentBrowser {
       return this.context;
     } catch (error) {
       accepted = false;
+      if (error.code === 'CONTROL_CONNECT_TIMEOUT') {
+        this.attachTimedOutAt = Date.now(); this.attachState = 'ATTACH_TIMEOUT_PENDING';
+        error.safeDiagnostics = await this.controlDiagnostics();
+      }
       void this.diagnostic('connect_failed', { durationMs: Date.now() - started, errorName: error.name });
       throw error;
     }
@@ -192,16 +195,30 @@ export class PersistentBrowser {
     return this.disconnectController(browser);
   }
 
+  async lifecycle() {
+    const state = await readState(this.config.browserState).catch(() => ({}));
+    const reachable = Boolean(await browserEndpoint(state.port, { fetchImpl: this.fetchImpl }));
+    let assessment = { state: !state.pid && !reachable ? 'NOT_RUNNING' : 'UNKNOWN' };
+    if (state.pid && this.security?.inspect) assessment = await this.security.inspect({ ...state, executable: this.config.executable, profile: this.config.profile });
+    else if (state.pid && !processAlive(state.pid) && !reachable) assessment = { state: 'NOT_RUNNING' };
+    const status = assessment.state === 'PROCESS_MATCHED' && reachable ? 'CDP_REACHABLE'
+      : assessment.state === 'NOT_RUNNING' && reachable ? 'UNKNOWN' : assessment.state;
+    return { status, pid: Number.isInteger(state.pid) ? state.pid : null, port: Number.isInteger(state.port) ? state.port : null,
+      endpoint_reachable: reachable, controller: await this.controlDiagnostics() };
+  }
+
   async disconnectController(browser) {
+    this.attachState = 'DISCONNECTING';
     const closing = Promise.resolve().then(() => browser.close());
     this.disconnecting = closing;
-    void closing.then(() => { if (this.disconnecting === closing) this.disconnecting = null; }, () => {
+    void closing.then(() => { if (this.disconnecting === closing) { this.disconnecting = null; this.attachState = this.attaching ? 'ATTACH_TIMEOUT_PENDING' : 'DISCONNECTED'; } }, () => {
       // A failed close with a live controller poisons this runtime. Do not let
       // the next request overlap an unconfirmed controller cleanup.
-      if (!browser.isConnected() && this.disconnecting === closing) this.disconnecting = null;
+      if (!browser.isConnected() && this.disconnecting === closing) { this.disconnecting = null; this.attachState = 'DISCONNECTED'; }
+      else this.attachState = 'CONTROLLER_POISONED';
     });
     try { await controlRequest(closing, { timeout: 5000, code: 'CONTROL_DISCONNECT_TIMEOUT' }); }
-    catch (error) { void this.diagnostic('disconnect_failed', { errorName: error.name }); throw error; }
+    catch (error) { this.attachState = 'CONTROLLER_POISONED'; error.safeDiagnostics = await this.controlDiagnostics(); void this.diagnostic('disconnect_failed', { errorName: error.name }); throw error; }
   }
 
   async terminate() {

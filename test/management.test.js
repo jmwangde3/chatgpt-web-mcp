@@ -47,7 +47,9 @@ test('doctor reports locks without deleting or reclaiming them', async (t) => {
   await writeState(lock, { pid: process.pid, token: 'PRIVATE_LOCK_TOKEN' });
   const before = await fs.readFile(lock, 'utf8');
   const result = await diagnose(f.kernel);
-  assert.equal(result.providers[0].checks.find((c) => c.name === 'task_lock').code, 'IN_USE');
+  const observed = result.providers[0].checks.find((c) => c.name === 'task_lock');
+  assert.equal(observed.code, 'UNREADABLE_LOCK');
+  assert.equal(observed.owner.owner_state, 'UNKNOWN', 'a legacy live PID without its creation identity is not proven');
   assert.ok(!JSON.stringify(result).includes('PRIVATE_LOCK_TOKEN'));
   assert.equal(await fs.readFile(lock, 'utf8'), before);
 });

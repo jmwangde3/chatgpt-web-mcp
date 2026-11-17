@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { diagnose } from './diagnostics.js';
 import { Comparisons } from './comparisons.js';
+import { safeControlDiagnostics } from '../shared/browser-diagnostics.js';
 
 export function registerUnifiedTools(server, kernel) {
   const provider = z.enum([...kernel.providers.keys()]);
@@ -8,7 +9,7 @@ export function registerUnifiedTools(server, kernel) {
   const comparisons = new Comparisons(kernel);
   const tool = (name, description, schema, handler) => server.registerTool(name, { description, inputSchema: schema }, async (input, extra) => {
     try { return { content: [{ type: 'text', text: JSON.stringify(await handler(input, extra.signal), null, 2) }] }; }
-    catch (error) { return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: error.code || 'CHAT_ERROR', error: error.message }) }] }; }
+    catch (error) { return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: error.code || 'CHAT_ERROR', error: error.message, ...(error.safeDiagnostics ? { diagnostics: safeControlDiagnostics(error.safeDiagnostics) } : {}) }) }] }; }
   });
   const run = (id, method, args, signal, readOnly = false, sessionId) => kernel.run(id, (browser) => browser[method](...args), { signal, readOnly, sessionId, conversationChanged: ['newChat', 'selectHistory'].includes(method), name: `chat_${method}` });
   tool('chat_compare', 'Send the same question to 2..6 explicitly authorized provider/model targets in fresh conversations. Discover exact names with chat_models first. Providers run independently; models on one provider run sequentially. Reuse identical input and request_id to resume unsent targets. Each answer stays separate; no automatic judge or synthesis.', { request_id: z.string().min(1).max(128), prompt: z.string().min(1), targets: z.array(z.object({ provider, model: z.string().min(1) })).min(2).max(6), timeoutMs: z.number().int().min(1000).max(300000).default(30000) }, (i, signal) => comparisons.run(i, { signal }));

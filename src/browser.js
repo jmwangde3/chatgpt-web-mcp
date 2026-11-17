@@ -2,9 +2,10 @@ import { guardedSend, bootstrapSendGuard } from './shared/send-guard.js';
 import { answerTierControlDOM } from './shared/composer-controls.js';
 import fs from "node:fs/promises";
 import path from "node:path";
+import os from 'node:os';
 import { AsyncLocalStorage } from "node:async_hooks";
 import { sessionPage, sessionView, mergeSessionView, validateSessionId } from './shared/sessions.js';
-import { WebUIError, PersistentBrowser, acquireLock } from './shared/persistent-browser.js';
+import { WebUIError, PersistentBrowser, acquireLock, writeState } from './shared/persistent-browser.js';
 import { controlRequest } from './shared/control.js';
 import { textHash, matchesUserPrompt } from './shared/user-message-identity.js';
 
@@ -693,42 +694,17 @@ async function readRuntimeState() {
   return sessionView(await readRawRuntimeState(), sessionContext.getStore(), SESSION_FIELDS);
 }
 
-async function withRuntimeState(update, { signal } = {}) {
-  await fs.mkdir(path.dirname(RUNTIME_STATE_FILE), { recursive: true });
-  const deadline = Date.now() + ACTION_TIMEOUT_MS;
-  let lock = null;
-  while (!lock && Date.now() < deadline) {
-    throwIfAborted(signal);
-    try {
-      lock = await fs.open(RUNTIME_LOCK_FILE, "wx", 0o600);
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      const stat = await fs.stat(RUNTIME_LOCK_FILE).catch(() => null);
-      if (stat && Date.now() - stat.mtimeMs > ACTION_TIMEOUT_MS) {
-        await fs.unlink(RUNTIME_LOCK_FILE).catch(() => {});
-        continue;
-      }
-      await waitWithAbort(50, signal);
-    }
-  }
-  if (!lock) {
-    throw new ChatGPTWebError("等待 ChatGPT MCP 的全局节流锁超时。", {
-      lock: RUNTIME_LOCK_FILE,
-    });
-  }
-
+export async function withRuntimeState(update, { signal } = {}) {
+  const release = await acquireLock(RUNTIME_LOCK_FILE, { signal, timeout: ACTION_TIMEOUT_MS, operation: 'runtime-state' });
   try {
     const raw = await readRawRuntimeState();
     const state = sessionView(raw, sessionContext.getStore(), SESSION_FIELDS);
     const { state: nextState = state, result } = await update(state);
     const merged = mergeSessionView(raw, nextState, sessionContext.getStore(), SESSION_FIELDS);
-    await fs.writeFile(RUNTIME_STATE_FILE, `${JSON.stringify(merged, null, 2)}\n`, {
-      mode: 0o600,
-    });
+    await writeState(RUNTIME_STATE_FILE, merged);
     return result;
   } finally {
-    await lock.close().catch(() => {});
-    await fs.unlink(RUNTIME_LOCK_FILE).catch(() => {});
+    await release();
   }
 }
 
@@ -739,9 +715,6 @@ async function waitForSiteAction(action, signal) {
       "ChatGPT 安全熔断已开启。不会执行新的网页操作；请先人工确认限流提示已经消失。",
       { circuitBreaker: initial.circuitBreaker, action },
     );
-  }
-  if (generationIsStale(initial)) {
-    initial = await clearStaleActiveGeneration(initial);
   }
   if (initial.activeGeneration?.active) {
     throw new ChatGPTWebError(
@@ -770,13 +743,6 @@ async function waitForSiteAction(action, signal) {
         "等待期间 ChatGPT 安全熔断已开启，当前网页操作已取消。",
         { circuitBreaker: state.circuitBreaker, action },
       );
-    }
-    if (generationIsStale(state)) {
-      state = {
-        ...state,
-        activeGeneration: null,
-        lastGenerationInterruptedAt: Date.now(),
-      };
     }
     if (state.activeGeneration?.active) {
       throw new ChatGPTWebError(
@@ -905,22 +871,16 @@ export function generationIsStale(runtime) {
   );
 }
 
-async function clearStaleActiveGeneration(runtime) {
-  if (!generationIsStale(runtime)) return runtime;
-  const interruptedAt = Date.now();
-  await updateRuntimeState({
-    activeGeneration: null,
-    lastGenerationInterruptedAt: interruptedAt,
-  });
-  return {
-    ...runtime,
-    activeGeneration: null,
-    lastGenerationInterruptedAt: interruptedAt,
-  };
+// Owner exit is diagnostic only. Completion requires evidence from the bound page.
+export function generationCompletionEvidence(runtime, { url, generating, responseCount, responseText }) {
+  const generation = runtime?.activeGeneration;
+  return Boolean(generation?.active && generation.url === url && !generating && String(responseText || '').trim() &&
+    (generation.assistantBefore == null ? responseCount > 0 : responseCount > Number(generation.assistantBefore) ||
+      String(responseText).trim() !== String(generation.baselineResponse || '').trim()));
 }
 
 async function acquireOperationLock(operation, signal) {
-  return acquireLock(OPERATION_LOCK_FILE, { signal, timeout: ACTION_TIMEOUT_MS });
+  return acquireLock(OPERATION_LOCK_FILE, { signal, timeout: ACTION_TIMEOUT_MS, operation });
 }
 
 export function rankTextMatch(items, query, getText = (item) => item) {
@@ -951,6 +911,7 @@ export class ChatGPTBrowser {
   constructor({ sessionId } = {}) { this.sessionId = validateSessionId(sessionId); }
   #runtime = new PersistentBrowser({
     browserState: BROWSER_STATE_FILE, profile: USER_DATA_DIR, runtimeState: RUNTIME_STATE_FILE, operationLock: OPERATION_LOCK_FILE,
+    taskLock: path.join(process.env.WEB_CHAT_DATA_DIR || path.join(os.homedir(), '.web-chat-mcp'), 'chatgpt', 'tasks.json.lock'),
     executable: CHROME_EXECUTABLE, url: CHATGPT_URL, headless: HEADLESS,
     actionTimeout: ACTION_TIMEOUT_MS, launchArgs: ['--start-maximized', '--new-window'],
   });
@@ -1001,10 +962,13 @@ export class ChatGPTBrowser {
     }
   }
 
-  async settleManagedGeneration() {
-    const stop = await this.firstVisible(SELECTORS.stopButton, { timeout: 100 });
-    if (stop) throw new ChatGPTWebError("回答仍在生成，不能解除任务状态。");
-    await updateRuntimeState({ activeGeneration: null, lastGenerationCompletedAt: Date.now() });
+  async settleManagedGeneration({ allowIdle = false } = {}) {
+    const snapshot = await this.getLatestResponse({ includeTranscript: false });
+    if (snapshot.generating) throw new ChatGPTWebError("回答仍在生成，不能解除任务状态。");
+    if (snapshot.activeGeneration?.active) {
+      if (!allowIdle || snapshot.activeGeneration.url !== snapshot.url) throw new ChatGPTWebError('Original generation completion remains unverified.');
+      await updateRuntimeState({ activeGeneration: null, lastGenerationInterruptedAt: Date.now() });
+    }
   }
 
   async close({ terminateBrowser = false } = {}) {
@@ -1103,10 +1067,6 @@ export class ChatGPTBrowser {
         "ChatGPT 安全熔断已开启。不会执行新的网页操作；请先人工确认限流提示已经消失。",
         { circuitBreaker: state.circuitBreaker, action },
       );
-    }
-    if (generationIsStale(state)) {
-      state = await clearStaleActiveGeneration(state);
-      return { allowed: true, staleGenerationCleared: true };
     }
     if (state.activeGeneration?.active) {
       throw new ChatGPTWebError(
@@ -1349,6 +1309,7 @@ export class ChatGPTBrowser {
     const runtime = await readRuntimeState();
     const browserRunning = processIsAlive(Number(state?.pid));
     return {
+      controller: await this.#runtime.controlDiagnostics(),
       persistent: true,
       browserRunning,
       reconnectDelayMs: RECONNECT_DELAY_MS,
@@ -1379,6 +1340,8 @@ export class ChatGPTBrowser {
       postBreakerCooldownPending: Boolean(runtime.postBreakerCooldownPending),
     };
   }
+
+  controllerDiagnostics() { return this.#runtime.controlDiagnostics(); }
 
   async terminateBrowser() {
     const state = await readBrowserState();
@@ -3779,6 +3742,11 @@ export class ChatGPTBrowser {
       throw error;
     }
 
+    const submittedURL = await this.waitForConversationURL();
+    await withRuntimeState(async state => ({ state: { ...state, activeGeneration:
+      state.activeGeneration?.startedAt === generationStartedAt && state.activeGeneration.ownerPid === process.pid
+        ? { ...state.activeGeneration, url: submittedURL } : state.activeGeneration } }));
+
     if (!wait) {
       return {
         sent: true,
@@ -3829,12 +3797,8 @@ export class ChatGPTBrowser {
         // an active generation; getLatestResponse can then clear it once the
         // final text is observable. This check does not fetch history.
         const latest = await this.getLatestResponse({ includeTranscript: false }).catch(() => null);
-        if (latest && !latest.generating) {
-          await updateRuntimeState({
-            activeGeneration: null,
-            lastGenerationInterruptedAt: Date.now(),
-          });
-        }
+        // Only verified completion in getLatestResponse may settle generation.
+        void latest;
       }
       throw error;
     }
@@ -4520,6 +4484,10 @@ export class ChatGPTBrowser {
 
   async getLatestResponse({ includeSettings = false, includeTranscript = true, includeIdentityCandidates = false } = {}) {
     const page = await this.page();
+    const runtime = await readRuntimeState();
+    if (runtime.activeGeneration?.active && runtime.activeGeneration.url !== page.url()) {
+      throw new WebUIError('GENERATION_CONVERSATION_MISMATCH', 'Return to the original generation conversation; its state was preserved.');
+    }
     const body = await page.locator("body").innerText().catch(() => "");
     const rateLimit = classifyRateLimitText(body);
     const lengthLimit = classifyConversationLengthText(body);
@@ -4528,7 +4496,6 @@ export class ChatGPTBrowser {
     const user = this.userLocator();
     const renderedAssistantCount = await this.controlRead(assistant.count());
     const renderedUserCount = await this.controlRead(user.count());
-    const runtime = await readRuntimeState();
     const stop = await this.firstVisible(SELECTORS.stopButton, { timeout: 100 });
     const lastAssistant = renderedAssistantCount ? assistant.last() : null;
     const lastAssistantText = lastAssistant
@@ -4537,27 +4504,18 @@ export class ChatGPTBrowser {
     const streaming = await this.assistantIsStreaming(lastAssistant);
     // A completed response can leave an empty assistant placeholder after
     // streaming finishes. Preserve the PR's node-count/change completion rule.
-    const generationComplete = Boolean(
-      runtime.activeGeneration?.active &&
-        !stop &&
-        !streaming &&
-        (runtime.activeGeneration.assistantBefore == null
-          ? renderedAssistantCount > 0
-          : renderedAssistantCount > Number(runtime.activeGeneration.assistantBefore) ||
-            lastAssistantText.trim() !==
-              String(runtime.activeGeneration.baselineResponse || "").trim()),
-    );
-    const staleGeneration = generationIsStale(runtime);
-    if (generationComplete || staleGeneration) {
+    const generationComplete = generationCompletionEvidence(runtime, {
+      url: page.url(), generating: Boolean(stop || streaming), responseCount: renderedAssistantCount, responseText: lastAssistantText,
+    });
+    const ownerExited = generationIsStale(runtime);
+    if (generationComplete) {
       await updateRuntimeState({
         activeGeneration: null,
-        ...(generationComplete
-          ? { lastGenerationCompletedAt: Date.now() }
-          : { lastGenerationInterruptedAt: Date.now() }),
+        lastGenerationCompletedAt: Date.now(),
       });
     }
     const generationUnconfirmed =
-      runtime.activeGeneration?.active && !generationComplete && !staleGeneration;
+      runtime.activeGeneration?.active && !generationComplete;
     let settings = this.cachedSettings();
     let settingsWarning = null;
     if (includeSettings && !runtime.circuitBreaker?.active && !generationUnconfirmed) {
@@ -4604,7 +4562,8 @@ export class ChatGPTBrowser {
       assistantMessageCount: assistantCount,
       generating: Boolean(stop || streaming),
       activeGeneration:
-        generationComplete || staleGeneration ? null : runtime.activeGeneration || null,
+        generationComplete ? null : runtime.activeGeneration || null,
+      generationOwnerExited: ownerExited,
       rateLimited: rateLimit.limited,
       rateLimitScope: rateLimit.scope,
       conversationTurnCount: conversationState.turnCount,

@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { acquireLock, readState, writeState, WebUIError } from '../shared/persistent-browser.js';
+import { safeControlDiagnostics } from '../shared/browser-diagnostics.js';
 import { recoveryFor } from './recovery.js';
 import { validateSessionId } from '../shared/sessions.js';
 import { textHash, matchesUserPrompt } from '../shared/user-message-identity.js';
@@ -41,6 +42,32 @@ export function validateJournal(raw, id) {
 const activeIn = (state, sessionId) => Object.values(state.tasks).find(t => !terminal.has(t.state) && t.session_id === sessionId);
 const releaseTask = (state, task) => { if (state.active === task.task_id) state.active = null; };
 
+// Aging is advisory only; it never changes occupancy or persisted state.
+function taskAge(task, now) {
+  const since = task.state === 'submitted' ? task.submitted_at ?? task.updated_at ?? task.created_at : task.updated_at ?? task.created_at;
+  const age_ms = Number.isFinite(since) ? Math.max(0, now - since) : null;
+  const age_classification = task.state === 'submitted' && age_ms > 20000 ? 'NEEDS_RECONCILIATION'
+    : task.state === 'uncertain' && age_ms > 600000 ? 'NEEDS_USER_REVIEW' : null;
+  return { age_ms, age_classification };
+}
+
+export function journalStatistics(journal, { now = Date.now() } = {}) {
+  const tasks = Object.values(journal.tasks);
+  const active = tasks.filter(task => !terminal.has(task.state));
+  const state_counts = {};
+  for (const task of tasks) state_counts[task.state] = (state_counts[task.state] || 0) + 1;
+  const oldest = active.filter(task => Number.isFinite(task.created_at)).sort((a, b) => a.created_at - b.created_at)[0];
+  return {
+    total_count: tasks.length, state_counts, active_count: active.length,
+    blocking_count: tasks.filter(task => task.blocking === true).length,
+    blocking_flag_mismatch_count: tasks.filter(task => task.blocking !== !terminal.has(task.state)).length,
+    active_session_count: new Set(active.map(task => task.session_id || '')).size,
+    oldest_active_task: oldest ? { state: oldest.state, created_at: oldest.created_at } : null,
+    oldest_active_age_ms: oldest ? Math.max(0, now - oldest.created_at) : null,
+    oldest_active_state: oldest?.state ?? null,
+  };
+}
+
 // Journal and brief UI operations are serialized per provider. Generation and
 // task occupancy are isolated by session; result waits release the lock.
 export class TaskKernel {
@@ -67,10 +94,14 @@ export class TaskKernel {
     if (!/^[a-z][a-z0-9_-]*:[0-9a-f-]{36}$/.test(taskId)) throw new WebUIError('INVALID_TASK', 'Invalid task_id.');
     const id = taskId.split(':')[0]; this.provider(id); return id;
   }
+  async readSnapshot(id) {
+    this.provider(id);
+    return validateJournal(await readState(path.join(this.directory, id, 'tasks.json')), id);
+  }
   async locked(id, fn, signal, deadline) {
     this.provider(id);
     const file = path.join(this.directory, id, 'tasks.json');
-    const release = await acquireLock(`${file}.lock`, { signal, timeout: deadline ? Math.max(1, deadline - Date.now()) : 180000 });
+    const release = await acquireLock(`${file}.lock`, { signal, operation: 'task-journal', timeout: deadline ? Math.max(1, deadline - Date.now()) : 180000 });
     try {
       const raw = await readState(file);
       const state = validateJournal(raw, id);
@@ -165,7 +196,7 @@ export class TaskKernel {
         const definitelyNotSent = error.code === 'SEND_NOT_ATTEMPTED' && error.sendOutcome === 'not_attempted';
         task.state = definitelyNotSent ? 'failed' : task.state === 'preparing' ? 'failed' : 'uncertain';
         task.blocking = task.state !== 'failed';
-        task.error = { code: error.code || (signal?.aborted ? 'INTERRUPTED' : 'PROVIDER_ERROR'), message: error.message.split('\n')[0] };
+        task.error = { code: error.code || (signal?.aborted ? 'INTERRUPTED' : 'PROVIDER_ERROR'), message: error.message.split('\n')[0], ...(error.safeDiagnostics ? { diagnostics: safeControlDiagnostics(error.safeDiagnostics) } : {}) };
         task.updated_at = Date.now(); if (!task.blocking) releaseTask(state, task);
         await save();
       }
@@ -202,7 +233,7 @@ export class TaskKernel {
           task.state = 'submitted';
         } catch (error) {
           task.state = 'uncertain';
-          task.error = { code: error.code || 'RETRY_UNCONFIRMED', message: error.message.split('\n')[0] };
+          task.error = { code: error.code || 'RETRY_UNCONFIRMED', message: error.message.split('\n')[0], ...(error.safeDiagnostics ? { diagnostics: safeControlDiagnostics(error.safeDiagnostics) } : {}) };
         }
         task.updated_at = Date.now(); await save();
       }, { signal, name: 'chat_retry' });
@@ -264,7 +295,7 @@ export class TaskKernel {
           } else if (cancel) {
             if (!observed.busy) throw new WebUIError('CANCEL_UNCONFIRMED', 'No active generation control could be confirmed. Task remains reserved.');
             await adapter.cancel();
-            await adapter.settle();
+            await adapter.settle({ allowIdle: true });
             task.state = 'cancelled'; task.blocking = false; releaseTask(state, task);
             task.response = { text: observed.text || '', format: 'plain_text', complete: false, model: observed.model || null, url: observed.url };
           } else { task.state = observed.busy ? 'running' : 'submitted'; task.blocking = true; }
@@ -275,7 +306,7 @@ export class TaskKernel {
         task.state = 'uncertain';
         const interruptedAfterBoundary = budgetReason && signal?.reason === budgetReason && error === budgetReason;
         const retainPriorError = error.code === 'CONTROL_BUSY' && previousState === 'uncertain' && previousError && !['CONTROL_BUSY', 'RESULT_TIMEOUT'].includes(previousError.code);
-        task.error = retainPriorError ? previousError : { code: interruptedAfterBoundary ? (cancel ? 'CANCEL_UNCONFIRMED' : 'RESULT_OBSERVATION_INTERRUPTED') : error.code || (signal?.aborted ? 'INTERRUPTED' : 'PROVIDER_ERROR'), message: error.message.split('\n')[0] };
+        task.error = retainPriorError ? previousError : { code: interruptedAfterBoundary ? (cancel ? 'CANCEL_UNCONFIRMED' : 'RESULT_OBSERVATION_INTERRUPTED') : error.code || (signal?.aborted ? 'INTERRUPTED' : 'PROVIDER_ERROR'), message: error.message.split('\n')[0], ...(error.safeDiagnostics ? { diagnostics: safeControlDiagnostics(error.safeDiagnostics) } : {}) };
       }
       task.updated_at = Date.now(); await save(); return taskView(task);
     }, signal, deadline);
@@ -323,9 +354,9 @@ export class TaskKernel {
         const observed = await adapter.inspect({ allowPageError: true });
         const saved = task.conversation_url;
         const expected = saved && !adapter.isProvisional?.(saved) ? saved : task.baseline?.url;
-        if (!expected || (canonicalURL(observed.url) !== canonicalURL(expected) && !adapter.isRoot(canonicalURL(expected)))) throw new WebUIError('CONVERSATION_CHANGED', 'Return to the original page before abandoning tracking.');
+        if (!expected || canonicalURL(observed.url) !== canonicalURL(expected)) throw new WebUIError('CONVERSATION_CHANGED', 'Return to the original page before abandoning tracking.');
         if (observed.busy) throw new WebUIError('GENERATING', 'Generation is active. Use chat_cancel for the verified task.');
-        await adapter.settle();
+        await adapter.settle({ allowIdle: true });
       }, { signal, name: 'chat_abandon' });
       task.state = 'abandoned'; task.blocking = false; task.updated_at = Date.now();
       task.error = { code: 'TRACKING_ABANDONED', message: 'Tracking explicitly abandoned. Delivery and completion are not asserted; the request_id remains reserved.' };
@@ -335,17 +366,16 @@ export class TaskKernel {
   async list(id, limit = 20, { offset = 0, state: filter } = {}) {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100 || !Number.isInteger(offset) || offset < 0) throw new WebUIError('INVALID_PAGE', 'limit must be 1..100 and offset a nonnegative integer.');
     if (filter && !['preparing', 'submitting', 'submitted', 'running', 'uncertain', ...terminal].includes(filter)) throw new WebUIError('INVALID_STATE', 'Unknown task state.');
-    return this.locked(id, async (state) => {
-      const tasks = Object.values(state.tasks).filter((task) => !filter || task.state === filter).sort((a, b) => b.created_at - a.created_at || a.task_id.localeCompare(b.task_id));
-      return { provider: id, active_task: state.active, active_tasks: Object.values(state.tasks).filter(t => !terminal.has(t.state)).map(t => ({ task_id: t.task_id, session_id: t.session_id || null, state: t.state })), total: tasks.length, offset, next_offset: offset + limit < tasks.length ? offset + limit : null, tasks: tasks.slice(offset, offset + limit).map((task) => {
-        const view = taskView(task); delete view.response; delete view.previous_response; return view;
-      }) };
-    });
+    const state = await this.readSnapshot(id);
+    const now = Date.now();
+    const tasks = Object.values(state.tasks).filter((task) => !filter || task.state === filter).sort((a, b) => b.created_at - a.created_at || a.task_id.localeCompare(b.task_id));
+    return { provider: id, active_task: state.active, active_tasks: Object.values(state.tasks).filter(t => !terminal.has(t.state)).map(t => ({ task_id: t.task_id, session_id: t.session_id || null, state: t.state })), total: tasks.length, offset, next_offset: offset + limit < tasks.length ? offset + limit : null, tasks: tasks.slice(offset, offset + limit).map((task) => {
+      const view = { ...taskView(task), ...taskAge(task, now) }; delete view.response; delete view.previous_response; return view;
+    }) };
   }
   async findRequest(id, requestId) {
-    return this.locked(id, (state) => {
-      const task = Object.values(state.tasks).find((task) => task.requestHash === fingerprint(requestId));
-      return task ? taskView(task) : null;
-    });
+    const state = await this.readSnapshot(id);
+    const task = Object.values(state.tasks).find((task) => task.requestHash === fingerprint(requestId));
+    return task ? taskView(task) : null;
   }
 }

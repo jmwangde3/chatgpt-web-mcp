@@ -41,7 +41,7 @@ test("default intervals are five seconds and disabled probes never touch the bro
   `);
 });
 
-test("exited MCP owner releases its generation lock without reading the browser", async () => {
+test("exited MCP owner cannot release generation without original-page completion evidence", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "chatgpt-web-mcp-policy-"));
   const runtimeFile = path.join(directory, "runtime.json");
   try {
@@ -56,12 +56,10 @@ test("exited MCP owner releases its generation lock without reading the browser"
       const browser = new ChatGPTBrowser();
       browser.page = async () => assert.fail("stale-owner cleanup must not open a page");
       browser.getLatestResponse = async () => assert.fail("stale-owner cleanup needs no page read");
-      assert.deepEqual(await browser.assertActionsAllowed("offline-test"), {
-        allowed: true, staleGenerationCleared: true,
-      });
+      await assert.rejects(browser.assertActionsAllowed("offline-test"), /生成任务/);
       const state = JSON.parse(await readFile(RUNTIME_STATE_FILE, "utf8"));
-      assert.equal(state.activeGeneration, null);
-      assert.ok(state.lastGenerationInterruptedAt > 0);
+      assert.equal(state.activeGeneration.active, true);
+      assert.equal(state.lastGenerationInterruptedAt, undefined);
 
       for (const ownerPid of [process.pid, null]) {
         await writeFile(RUNTIME_STATE_FILE, JSON.stringify({ activeGeneration: { active: true, ownerPid } }));
@@ -82,11 +80,12 @@ test('ChatGPT session context isolates production runtime writes while preservin
       import { readFile, writeFile } from 'node:fs/promises';
       import { ChatGPTBrowser } from './src/browser.js';
       import { RUNTIME_STATE_FILE } from './src/config.js';
-      const generation = { active: true, ownerPid: process.pid };
+      const generation = { active: true, ownerPid: process.pid, url:'https://chatgpt.com/c/original' };
       await writeFile(RUNTIME_STATE_FILE, JSON.stringify({activeGeneration:generation,sessions:{a:{activeGeneration:generation},b:{activeGeneration:generation}}}));
       const a = new ChatGPTBrowser({sessionId:'a'}), b = new ChatGPTBrowser({sessionId:'b'}), fresh = new ChatGPTBrowser({sessionId:'new'});
       a.firstVisible = async () => null;
-      await a.runExclusive(() => a.settleManagedGeneration());
+      a.getLatestResponse = async () => ({generating:false,activeGeneration:generation,url:generation.url});
+      await a.runExclusive(() => a.settleManagedGeneration({allowIdle:true}));
       const read = async () => JSON.parse(await readFile(RUNTIME_STATE_FILE,'utf8'));
       const state = await read();
       assert.equal(state.activeGeneration.active,true);

@@ -45,7 +45,16 @@ test('a stalled CDP attach times out without spawning another browser and dispos
   const { config } = await fixture(t);
   let resolve, closes = 0, attempts = 0;
   const runtime = new PersistentBrowser(config, { security: null, fetchImpl, connect: () => { attempts++; return new Promise(done => { resolve = done; }); }, spawnImpl: () => assert.fail('must reuse live browser') });
-  await assert.rejects(runtime.connect(), { code: 'CONTROL_CONNECT_TIMEOUT' });
+  await assert.rejects(runtime.connect(), error => {
+    assert.equal(error.code, 'CONTROL_CONNECT_TIMEOUT');
+    assert.equal(runtime.attachState, 'ATTACH_TIMEOUT_PENDING');
+    assert.equal(error.safeDiagnostics.controller_state, 'ATTACH_TIMEOUT_PENDING');
+    assert.equal(error.safeDiagnostics.endpoint_reachable, true);
+    assert.equal(error.safeDiagnostics.restart_mcp_required, true);
+    assert.ok(error.safeDiagnostics.attach_age_ms >= config.actionTimeout);
+    assert.equal(JSON.stringify(error.safeDiagnostics).includes(config.profile), false);
+    return true;
+  });
   await assert.rejects(runtime.connect(), { code: 'CONTROL_BUSY' });
   const browser = new EventEmitter(); browser.close = async () => { closes++; };
   resolve(browser);
