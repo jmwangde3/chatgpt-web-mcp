@@ -1,14 +1,14 @@
 ---
-name: codex-chatgpt-review-github
-description: 让 Codex 与 ChatGPT Web 按固定 GitHub Commit SHA 协作审查代码；默认 auto 优先 GitHub，条件不足时改用独立的本地证据 Skill。仅在用户要求 ChatGPT Web 参与代码复审或明确点名本 Skill 时使用。
+name: gh-review
+description: ChatGPT Web 代码复审统一入口；默认 auto 优先固定 GitHub SHA，条件不足时委派 local-review，支持显式 github/local。仅在用户要求 ChatGPT Web 参与代码复审时使用。
 ---
 
-# Codex × ChatGPT Web：GitHub 代码复审
+# Codex × ChatGPT Web：代码复审统一入口
 
-本 Skill 负责 `mode=auto`（默认）和 `mode=github`。用户明确选择 `local` 时直接调用 `$codex-chatgpt-review-local`；不要执行 GitHub 推送。不要因为普通代码修改或普通本地审查而自动调用网页专家。
+本 Skill 负责 `mode=auto`（默认）和 `mode=github`。用户明确选择 `local` 时直接调用 `$local-review`；不要执行 GitHub 推送。不要因为普通代码修改或普通本地审查而自动调用网页专家。
 
 1. 先读取 [GitHub 工作流](references/github-review-workflow.md) 中的条件检查与推送门禁；运行 `git status --short`、`git branch --show-current`、`git rev-parse HEAD`、`git remote -v`。核实远程确为 GitHub、账号的推送能力、当前修改的归属和用户是否允许把本轮内容推送到指定审查分支。
-2. 查看当前规范源中的 `$web-chat` Skill（`C:/Users/jmwan/.skills-manager/skills/web-chat/SKILL.md`），并按宿主工具发现结果获取当前 ChatGPT Web MCP 的实际接口定义。不得凭旧工具名或参数猜测调用。复用它的 `chat_send`、`chat_result`、会话保持及幂等恢复；不得开发新浏览器/CDP/发送机制。
+2. 通过宿主 Skill 发现机制定位已安装的 `$web-chat`，读取其实际解析出的 `SKILL.md`，再通过工具发现获取当前有效 MCP Schema。Skill 或 MCP 不可用时报告具体缺失，不猜安装路径、不扫描其他用户目录，也不凭旧工具名或参数猜测调用。复用它的 `chat_send`、`chat_result`、会话保持及幂等恢复；不得开发新浏览器/CDP/发送机制。
 
    仅当 A 工具集已验收且当前宿主实际注册了 `unified` 工具集时，优先使用统一工具；未验证或未启用时继续使用 `full`。始终依据当前 Schema 发现工具，不擅自修改环境变量或宿主配置；当前工具集未提供的专用功能必须明示限制。
 3. 尝试确认 **ChatGPT Web 自己**可以按仓库与完整 SHA 读取代码。Codex/GitHub 连接可读不等于 ChatGPT Web 可读。若不能证实，`auto` 转本地 Skill；显式 `github` 返回阻塞。转本地前核对用户对向 ChatGPT Web 发送本地代码证据的许可。

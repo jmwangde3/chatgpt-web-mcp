@@ -28,6 +28,10 @@
   "files": [
     "src",
     "skills/web-chat",
+    "skills/gh-review",
+    "skills/local-review",
+    "docs/REVIEW_SKILLS.md",
+    "scripts/verify-package.js",
     "docs/CODEX_SKILL.md",
     "docs/GEMINI_VALIDATION.md",
     "scripts/doctor.js",

@@ -2,7 +2,7 @@
 
 ## 1. 决策：auto / github / local
 
-从当前用户本轮明确指令判定模式：`local` 永远直达本地 Skill；`github` 只执行 GitHub 方案，不自动更换；未指定时 `auto`。`auto` 只有在**真实 GitHub remote、允许推送、GitHub 上为当前完整 SHA、ChatGPT Web 能自行读取目标版本**全部满足时选 GitHub，否则在用户允许分享相关本地证据时转 `$codex-chatgpt-review-local`。不允许任何外发时停下并提供仅本地 Codex 检查结果，不能冒充网页复审。
+从当前用户本轮明确指令判定模式：`local` 永远直达本地 Skill；`github` 只执行 GitHub 方案，不自动更换；未指定时 `auto`。`auto` 只有在**真实 GitHub remote、允许推送、GitHub 上为当前完整 SHA、ChatGPT Web 能自行读取目标版本**全部满足时选 GitHub，否则在用户允许分享相关本地证据时转 `$local-review`。不允许任何外发时停下并提供仅本地 Codex 检查结果，不能冒充网页复审。
 
 ### 检查命令（只读）
 
