@@ -3,13 +3,17 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { verifyWindowsPaths, windowsQuery } from '../src/shared/windows-security.js';
+import { validateSecuritySnapshot, verifyWindowsPaths, windowsQuery } from '../src/shared/windows-security.js';
 import { secureNewFixture } from './private-fixture.js';
 
 const windowsOnly = { skip: process.platform !== 'win32' };
 
 async function fixture(t) {
-  const parent = path.resolve(os.tmpdir());
+  const parent = path.resolve(process.platform === 'win32'
+    ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Temp')
+    : os.tmpdir());
+  // Ensure the base exists without changing any existing ancestor permissions.
+  await fs.mkdir(parent, { recursive: true });
   const directory = await fs.mkdtemp(path.join(parent, 'windows-security-fixture-'));
   const junctions = [];
   t.after(async () => {
@@ -33,6 +37,69 @@ async function sddl(paths) {
   return windowsQuery(`
 @{entries=@($q.paths|ForEach-Object {@{path=$_;sddl=(Get-Acl -LiteralPath $_).Sddl}})}|ConvertTo-Json -Depth 4 -Compress
 `, { paths });
+}
+
+// All mutations are confined to fresh fixtures; protected children prevent the
+// synthetic parent ACE from becoming an unrelated unsafe data-directory ACE.
+for (const [label, sid, mask] of [
+  ['Everyone DeleteChild', 'S-1-1-0', 64],
+  ['Users ChangePermissions', 'S-1-5-32-545', 262144],
+  ['Users TakeOwnership', 'S-1-5-32-545', 524288],
+]) {
+  test(`Windows ancestor ${label} rejects without changing ACLs, bytes or tree`, windowsOnly, async t => {
+    const { directory } = await fixture(t);
+    const profile = path.join(directory, 'profile');
+    await fs.mkdir(profile);
+    await secureNewFixture(profile);
+    const input = { profile, browserState: path.join(profile, 'state.json') };
+    await fs.writeFile(input.browserState, 'preserve fixture state\r\n', 'utf8');
+    const applied = await windowsQuery(`
+try {
+$acl=[IO.Directory]::GetAccessControl($q.directory,[Security.AccessControl.AccessControlSections]::Access)
+$principal=New-Object Security.Principal.SecurityIdentifier($q.sid)
+$rights=[Security.AccessControl.FileSystemRights][int]$q.mask
+$rule=New-Object Security.AccessControl.FileSystemAccessRule($principal,$rights,[Security.AccessControl.InheritanceFlags]::None,[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)
+$acl.AddAccessRule($rule)
+[IO.Directory]::SetAccessControl($q.directory,$acl)
+@{updated=$true}|ConvertTo-Json -Compress
+} catch { @{error=$_.Exception.Message}|ConvertTo-Json -Compress }
+`, { directory, sid, mask });
+    assert.equal(applied.updated, true, applied.error);
+    const paths = [directory, profile, input.browserState];
+    const capture = async () => ({
+      acl: await sddl(paths),
+      bytes: await fs.readFile(input.browserState),
+      tree: [await fs.readdir(directory), await fs.readdir(profile)],
+    });
+    const before = await capture();
+    let checked = false;
+    try {
+    await assert.rejects(verifyWindowsPaths(input, {
+      allowCreate: false,
+      query: async (script, evidence) => {
+        assert.deepEqual(evidence.initialize, []);
+        const snapshot = await windowsQuery(script, evidence);
+        const parent = snapshot.ancestors.find(entry => path.resolve(entry.path).toLowerCase() === directory.toLowerCase());
+        assert.ok(parent, 'real security query must include the test parent');
+        assert.ok(parent.rules.some(rule => rule.sid === sid && rule.allow && !rule.inheritOnly && (rule.mask & mask) === mask));
+        // Attribution only: production verification below receives unmodified evidence.
+        assert.doesNotThrow(() => validateSecuritySnapshot({ ...snapshot, ancestors: [] }), 'protected profile/state must be safe');
+        assert.throws(() => validateSecuritySnapshot({ ...snapshot, ancestors: [parent] }), { code: 'PROFILE_ACL_UNSAFE' });
+        for (const entry of snapshot.ancestors.filter(entry => entry !== parent)) {
+          try { validateSecuritySnapshot({ ...snapshot, ancestors: [entry] }); }
+          catch { t.diagnostic(`Unsafe unrelated ancestor: ${entry.path}; owner=${entry.ownerSid}`); }
+        }
+        assert.doesNotThrow(() => validateSecuritySnapshot({ ...snapshot, ancestors: snapshot.ancestors.filter(entry => entry !== parent) }),
+          'unrelated temp ancestors are unsafe; report the host ACL instead of bypassing it');
+        checked = true;
+        return snapshot;
+      },
+    }), { code: 'PROFILE_ACL_UNSAFE' });
+    assert.equal(checked, true, 'rejection must reach the real ancestor ACL evidence');
+    } finally {
+      assert.deepEqual(await capture(), before);
+    }
+  });
 }
 
 test('Windows rejects a profile junction to another test-owned temporary directory', windowsOnly, async t => {

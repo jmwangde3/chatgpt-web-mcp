@@ -1,7 +1,8 @@
-import { verifyWindowsPaths, verifyWindowsProcess } from '../shared/windows-security.js';
+import { verifyWindowsPaths, inspectWindowsBrowserProcess } from '../shared/windows-security.js';
+import { inspectLinuxBrowserProcess } from '../shared/native-browser-identity.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { readState, processAlive } from '../shared/persistent-browser.js';
+import { readState, processAlive, browserEndpoint } from '../shared/persistent-browser.js';
 import { validateJournal, journalStatistics } from './tasks.js';
 import { readLockSnapshot } from '../shared/locks.js';
 import { Installer, installDirectory } from '../maintenance.js';
@@ -37,11 +38,18 @@ export async function diagnose(kernel, ids = [...kernel.providers.keys()]) {
     if (process.platform === 'win32' && config?.profile) {
       try { await verifyWindowsPaths(config, { allowCreate: false }); check('profile_security', 'pass', 'VERIFIED', 'none'); }
       catch (error) { check('profile_security', error.code === 'PROFILE_MISSING' ? 'warn' : 'fail', ['PROFILE_MISSING','PROFILE_REPARSE_POINT','PROFILE_IN_REPOSITORY','PROFILE_ACL_UNSAFE','PROFILE_NOT_DIRECTORY','PROFILE_NOT_FILE','SECURITY_QUERY_TIMEOUT'].includes(error.code) ? error.code : 'PROFILE_SECURITY_UNVERIFIED', 'Inspect locally; existing permissions and data were preserved.'); }
-      try {
-        const state = await localState(config.browserState);
-        if (state.pid) { await verifyWindowsProcess({ ...state, executable: config.executable, profile: config.profile }); check('browser_ownership', 'pass', 'VERIFIED', 'Sign-in is not checked.'); }
-      } catch { check('browser_ownership', 'fail', 'BROWSER_IDENTITY_UNVERIFIED', 'Preserve state and inspect locally; no process was terminated.'); }
     }
+    try {
+      const saved = await localState(config.browserState);
+      const reachable = Boolean(await browserEndpoint(saved.port));
+      const inspect = process.platform === 'win32' ? inspectWindowsBrowserProcess : process.platform === 'linux' ? inspectLinuxBrowserProcess : null;
+      const assessment = saved.pid && inspect && config.profile && Number.isInteger(saved.port) ? await inspect({ ...saved, executable: config.executable, profile: config.profile }) : { state: !saved.pid && !reachable ? 'NOT_RUNNING' : 'UNKNOWN' };
+      const status = assessment.state === 'PROCESS_MATCHED' && reachable ? 'CDP_REACHABLE' : assessment.state === 'NOT_RUNNING' && reachable ? 'UNKNOWN' : assessment.state;
+      checks.push({ name: 'browser_lifecycle', status: status === 'IDENTITY_MISMATCH' ? 'fail' : status === 'CDP_REACHABLE' ? 'pass' : 'warn', code: status,
+        pid: Number.isInteger(assessment.identity?.pid || saved.pid) ? assessment.identity?.pid || saved.pid : null,
+        port: Number.isInteger(saved.port) ? saved.port : null, endpoint_reachable: reachable,
+        action: status === 'PROCESS_MATCHED_NO_CDP' ? 'Do not launch another Chrome. Inspect the dedicated process manually; preserve state.' : 'Read-only process and endpoint evidence; sign-in is not checked.' });
+    } catch { check('browser_lifecycle', 'warn', 'UNKNOWN', 'Preserve state and inspect locally. No browser was started or terminated.'); }
     for (const [name, file] of [['operation_lock', config?.operationLock], ['task_lock', path.join(kernel.directory, id, 'tasks.json.lock')], ['runtime_lock', config?.runtimeState && config.runtimeState + '.lock']]) {
       if (!file) continue;
       try {

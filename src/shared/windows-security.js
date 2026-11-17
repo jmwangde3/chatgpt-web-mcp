@@ -15,12 +15,29 @@ export function assertWindowsIdentity(expected, actual) {
 }
 export function validateSecuritySnapshot(snapshot) {
   if (!/^S-1-/.test(snapshot?.currentSid || '') || !Array.isArray(snapshot.entries) || !snapshot.entries.length) fail('PROFILE_SECURITY_UNVERIFIED', 'Windows security evidence is missing.');
-  const trusted = new Set([snapshot.currentSid, 'S-1-5-18', 'S-1-5-32-544']);
-  for (const item of snapshot.entries) {
+  const trusted = new Set([snapshot.currentSid, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464']);
+  for (const item of [...snapshot.entries, ...(snapshot.ancestors || [])]) {
     if (item.isReparsePoint) fail('PROFILE_REPARSE_POINT', 'Profile or state paths must not contain a reparse point.');
-    if (!trusted.has(item.ownerSid) || !Array.isArray(item.rules) || !item.rules.length || item.rules.some(r => r.allow && r.write && !trusted.has(r.sid))) fail('PROFILE_ACL_UNSAFE', 'Profile/state ownership or write permissions are unsafe; no ACL was changed.');
+    if (!trusted.has(item.ownerSid) || !Array.isArray(item.rules) || !item.rules.length || untrustedEffectiveRights(item.rules, snapshot.entries.includes(item) ? 852310 : 0xD0040, trusted)) fail('PROFILE_ACL_UNSAFE', 'Profile/state or ancestor ownership and effective mutation permissions are unsafe; no ACL was changed.');
   }
   return snapshot;
+}
+
+// Evaluate ordered standard DACL ACEs. A hypothetical outsider has the named
+// principal and Everyone; no unverified group membership is assumed to grant a
+// deny. This is conservative for domain/group membership we cannot prove.
+export function untrustedEffectiveRights(rules, requested, trusted = new Set()) {
+  const candidates = [...new Set(rules.filter(r => r.allow && !r.inheritOnly && !trusted.has(r.sid)).map(r => r.sid))];
+  for (const sid of candidates) {
+    let remaining = requested;
+    for (const rule of rules) {
+      if (rule.inheritOnly || (rule.sid !== sid && rule.sid !== 'S-1-1-0')) continue;
+      const rights = (Number.isFinite(rule.mask) ? rule.mask : rule.write ? 852310 : 0) & remaining;
+      if (rule.allow && rights) return true;
+      remaining &= ~rights;
+    }
+  }
+  return false;
 }
 // Constant script plus JSON stdin: no path, PID or port is interpolated as code.
 export function windowsQuery(script, input, { timeout = 8000, spawnImpl = spawn } = {}) {
@@ -43,9 +60,45 @@ $p=Get-CimInstance Win32_Process -Filter ("ProcessId="+[int]$tcp[0].OwningProces
 if(-not $p){throw 'missing listener process'}
 @{pid=[int]$p.ProcessId;parentPid=[int]$p.ParentProcessId;creationTime=$p.CreationDate.ToUniversalTime().ToString('o');executable=$p.ExecutablePath;commandLine=$p.CommandLine;ownerPid=[int]$tcp[0].OwningProcess;port=[int]$tcp[0].LocalPort;address=$tcp[0].LocalAddress}|ConvertTo-Json -Compress
 `;
+const processInspectionScript = `
+$p=Get-CimInstance Win32_Process -Filter ("ProcessId="+[int]$q.pid)
+$listeners=@(Get-NetTCPConnection -State Listen -ErrorAction Stop|Where-Object {$_.LocalPort -eq [int]$q.port})
+$convert={param($p) if($p){@{pid=[int]$p.ProcessId;parentPid=[int]$p.ParentProcessId;creationTime=$p.CreationDate.ToUniversalTime().ToString('o');executable=$p.ExecutablePath;commandLine=$p.CommandLine}}}
+$recorded=&$convert $p
+$owners=@($listeners|ForEach-Object {$owner=Get-CimInstance Win32_Process -Filter ("ProcessId="+[int]$_.OwningProcess);$item=&$convert $owner;if($item){$item.ownerPid=[int]$_.OwningProcess;$item.port=[int]$_.LocalPort;$item.address=$_.LocalAddress;$item}})
+@{recorded=$recorded;listeners=$owners}|ConvertTo-Json -Depth 6 -Compress
+`;
+
+export async function inspectWindowsBrowserProcess(expected, { query = windowsQuery } = {}) {
+  if (!Number.isInteger(expected?.pid) || expected.pid < 1 || !Number.isInteger(expected.port) || expected.port < 1 || expected.port > 65535 || !expected.executable || !expected.profile) return { state: 'UNKNOWN' };
+  try {
+    const evidence = await query(processInspectionScript, { pid: expected.pid, port: expected.port });
+    if (!Array.isArray(evidence.listeners)) return { state: 'UNKNOWN' };
+    if (!evidence.recorded) {
+      if (!evidence.listeners.length) return { state: 'NOT_RUNNING' };
+      if (evidence.listeners.length !== 1) return { state: 'IDENTITY_MISMATCH' };
+      const identity = await verifyWindowsProcess(expected, { query: async () => evidence.listeners[0] });
+      return { state: 'PROCESS_MATCHED', identity, listener_present: true };
+    }
+    const actual = evidence.recorded;
+    const tokens = (String(actual.commandLine || '').match(/(?:"[^"]*"|[^\s"])+/g) || []).map(t => t.replaceAll('"', ''));
+    const flag = name => { const values = tokens.filter(t => t.startsWith(name + '=')); return values.length === 1 ? values[0].slice(name.length + 1) : ''; };
+    const address = flag('--remote-debugging-address');
+    if (flag('--remote-debugging-port') !== String(expected.port) || !['127.0.0.1','::1'].includes(address)) return { state: 'IDENTITY_MISMATCH' };
+    assertWindowsIdentity({ ...expected, creationTime: expected.creationTime || actual.creationTime }, {
+      ...actual, profile: flag('--user-data-dir'), port: expected.port, ownerPid: actual.pid, address,
+    });
+    const identity = { pid: actual.pid, port: expected.port, profile: expected.profile, executable: actual.executable, creationTime: actual.creationTime };
+    if (!evidence.listeners.length) return { state: 'PROCESS_MATCHED_NO_CDP', identity, listener_present: false };
+    if (evidence.listeners.length !== 1) return { state: 'IDENTITY_MISMATCH' };
+    await verifyWindowsProcess({ ...expected, creationTime: identity.creationTime }, { query: async () => evidence.listeners[0] });
+    return { state: 'PROCESS_MATCHED', identity, listener_present: true };
+  } catch (error) { return { state: error.code === 'BROWSER_IDENTITY_MISMATCH' ? 'IDENTITY_MISMATCH' : 'UNKNOWN' }; }
+}
+
 export async function verifyWindowsProcess(expected, { query = windowsQuery } = {}) {
   if (!Number.isInteger(expected.pid) || expected.pid < 1 || !Number.isInteger(expected.port) || expected.port < 1 || expected.port > 65535) fail('BROWSER_IDENTITY_MISMATCH','Invalid PID or port.');
-  const actual = await query(identityScript, {pid:expected.pid,port:expected.port});
+  const actual = { ...await query(identityScript, {pid:expected.pid,port:expected.port}) };
   const tokens = String(actual.commandLine || '').match(/(?:"[^"]*"|[^\s"])+/g) || [];
   const flags = tokens.map(t=>t.replaceAll('"',''));
   const flag = name => { const values=flags.filter(t=>t.startsWith(name+'=')); return values.length === 1 ? values[0].slice(name.length+1) : ''; };
@@ -83,14 +136,15 @@ foreach($ancestor in $q.ancestors){
  if($item.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'reparse ancestor'}
 }
 $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$entries=@()
-foreach($p in $q.paths){
+function Read-SecurityEntry($p){
  $i=Get-Item -Force -LiteralPath $p
  $a=Get-Acl -LiteralPath $p
- $rules=@($a.Access|ForEach-Object {@{sid=$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value;allow=($_.AccessControlType -eq 'Allow');write=(([int64]$_.FileSystemRights -band 852310) -ne 0)}})
- $entries+=@{path=$i.FullName;isDirectory=[bool]$i.PSIsContainer;isReparsePoint=[bool]($i.Attributes -band [IO.FileAttributes]::ReparsePoint);ownerSid=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;rules=$rules}
+ $rules=@($a.Access|ForEach-Object {@{sid=$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value;allow=($_.AccessControlType -eq 'Allow');mask=[int64]$_.FileSystemRights;write=(([int64]$_.FileSystemRights -band 852310) -ne 0);inherited=[bool]$_.IsInherited;inheritOnly=[bool]($_.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly);inheritanceFlags=[int]$_.InheritanceFlags;propagationFlags=[int]$_.PropagationFlags}})
+ return @{path=$i.FullName;isDirectory=[bool]$i.PSIsContainer;isReparsePoint=[bool]($i.Attributes -band [IO.FileAttributes]::ReparsePoint);ownerSid=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;rules=$rules}
 }
-@{currentSid=$sid;entries=$entries}|ConvertTo-Json -Depth 8 -Compress
+$entries=@($q.paths|ForEach-Object {Read-SecurityEntry $_})
+$parentEntries=@($q.ancestors|ForEach-Object {Read-SecurityEntry $_})
+@{currentSid=$sid;entries=$entries;ancestors=$parentEntries}|ConvertTo-Json -Depth 8 -Compress
 `;
 export async function verifyWindowsPaths(config, { query = windowsQuery, allowCreate = true } = {}) {
   const directories = [...new Set([config.profile, path.dirname(config.browserState), config.runtimeState && path.dirname(config.runtimeState)].filter(Boolean).map(p=>path.resolve(p)))];
@@ -117,5 +171,6 @@ export async function verifyWindowsPaths(config, { query = windowsQuery, allowCr
   }
   for (const file of [config.browserState,config.runtimeState,config.operationLock].filter(Boolean)) { try {const info=await fs.lstat(file);if(info.isSymbolicLink())fail('PROFILE_REPARSE_POINT','State/lock is a link.');if(!info.isFile())fail('PROFILE_NOT_FILE','State/lock must be a regular file.');paths.push(file);}catch(e){if(e.code!=='ENOENT')throw e;} }
   const snapshot=await query(securityScript,{paths, initialize: [...new Set(initialize)].reverse(), ancestors:[...ancestors]});
+  if (!Array.isArray(snapshot.ancestors) || snapshot.ancestors.length !== ancestors.size) fail('PROFILE_SECURITY_UNVERIFIED', 'Ancestor ACL evidence is incomplete; no existing permissions were changed.');
   return validateSecuritySnapshot(snapshot);
 }

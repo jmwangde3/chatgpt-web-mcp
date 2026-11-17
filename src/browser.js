@@ -1307,9 +1307,11 @@ export class ChatGPTBrowser {
   async browserLifecycle() {
     const state = await readBrowserState();
     const runtime = await readRuntimeState();
-    const browserRunning = processIsAlive(Number(state?.pid));
+    const lifecycle = await this.#runtime.lifecycle();
+    const browserRunning = ['PROCESS_MATCHED','CDP_REACHABLE','PROCESS_MATCHED_NO_CDP'].includes(lifecycle.status) || (lifecycle.status !== 'NOT_RUNNING' && processIsAlive(Number(state?.pid)));
     return {
       controller: await this.#runtime.controlDiagnostics(),
+      lifecycle,
       persistent: true,
       browserRunning,
       reconnectDelayMs: RECONNECT_DELAY_MS,

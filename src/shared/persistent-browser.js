@@ -1,4 +1,5 @@
-import { verifyWindowsProcess, verifyWindowsPaths } from './windows-security.js';
+import { verifyWindowsProcess, verifyWindowsPaths, inspectWindowsBrowserProcess } from './windows-security.js';
+import { verifyLinuxBrowserProcess, inspectLinuxBrowserProcess } from './native-browser-identity.js';
 import fs from "node:fs/promises";
 import path from "node:path";
 import net from "node:net";
@@ -60,8 +61,9 @@ export async function browserEndpoint(port, { signal, timeout = 1000, fetchImpl 
 // Provider-neutral persistent Chrome runtime. Connecting and disconnecting does
 // not terminate Chrome; only explicit terminate() sends Browser.close.
 export class PersistentBrowser {
-  constructor(config, { connect = chromium.connectOverCDP.bind(chromium), fetchImpl = fetch, spawnImpl = spawn, security = process.platform === "win32" ? { paths: verifyWindowsPaths, process: verifyWindowsProcess } : null } = {}) {
+  constructor(config, { connect = chromium.connectOverCDP.bind(chromium), fetchImpl = fetch, spawnImpl = spawn, inspectPID = inspectProcessIdentity, security = process.platform === "win32" ? { paths: verifyWindowsPaths, process: verifyWindowsProcess, inspect: inspectWindowsBrowserProcess } : process.platform === 'linux' ? { paths: async () => {}, process: verifyLinuxBrowserProcess, inspect: inspectLinuxBrowserProcess } : null } = {}) {
     this.security = security;
+    this.inspectPID = inspectPID;
     this.config = config; this.browser = null; this.context = null;
     this.connector = connect; this.fetchImpl = fetchImpl; this.spawnImpl = spawnImpl;
     this.diagnostic = browserDiagnostics(config.browserState);
@@ -108,7 +110,17 @@ export class PersistentBrowser {
     this.launched = false;
     if (this.security) await this.security.paths(config);
     let prior = await readState(config.browserState);
-    if (this.security && prior.pid) {
+    let priorMissing = false;
+    if (prior.pid && this.security?.inspect) {
+      const inspection = await this.security.inspect({ ...prior, executable: config.executable, profile: config.profile });
+      if (inspection.state === 'PROCESS_MATCHED_NO_CDP') throw new WebUIError('BROWSER_NO_CDP', 'The verified dedicated process has no debugging listener. Preserve it and inspect manually; no second browser was launched.');
+      if (['UNKNOWN','IDENTITY_MISMATCH'].includes(inspection.state)) throw new WebUIError('BROWSER_IDENTITY_MISMATCH', 'Dedicated process identity is unknown or mismatched. No process was started or terminated.');
+      if (inspection.state === 'NOT_RUNNING') {
+        if (await browserEndpoint(prior.port, { signal, fetchImpl: this.fetchImpl })) throw new WebUIError('BROWSER_IDENTITY_MISMATCH', 'The recorded PID is absent but its port is still reachable. State was preserved.');
+        priorMissing = true;
+      }
+    }
+    if (this.security && prior.pid && !priorMissing) {
       const identity = await this.security.process({ ...prior, executable: config.executable, profile: config.profile });
       if (prior.creationTime !== identity.creationTime || prior.processStartIdentity !== identity.processStartIdentity || prior.pid !== identity.pid) { prior = { ...prior, ...identity }; await writeState(config.browserState, prior); }
     }
@@ -203,7 +215,7 @@ export class PersistentBrowser {
     else if (state.pid && !processAlive(state.pid) && !reachable) assessment = { state: 'NOT_RUNNING' };
     const status = assessment.state === 'PROCESS_MATCHED' && reachable ? 'CDP_REACHABLE'
       : assessment.state === 'NOT_RUNNING' && reachable ? 'UNKNOWN' : assessment.state;
-    return { status, pid: Number.isInteger(state.pid) ? state.pid : null, port: Number.isInteger(state.port) ? state.port : null,
+    return { status, pid: Number.isInteger(assessment.identity?.pid || state.pid) ? assessment.identity?.pid || state.pid : null, port: Number.isInteger(state.port) ? state.port : null,
       endpoint_reachable: reachable, controller: await this.controlDiagnostics() };
   }
 
@@ -223,17 +235,41 @@ export class PersistentBrowser {
 
   async terminate() {
     // Never launch a browser just to close one.
-    const state = await readState(this.config.browserState);
-    if (!processAlive(state.pid)) return { closed: false, browserRunning: false };
+    const initial = await readState(this.config.browserState);
+    const endpoint = await browserEndpoint(initial.port, { fetchImpl: this.fetchImpl });
+    if (!processAlive(initial.pid) && !endpoint) {
+      if (this.security?.inspect && initial.pid) {
+        const inspected = await this.security.inspect({ ...initial, executable: this.config.executable, profile: this.config.profile });
+        if (inspected.state !== 'NOT_RUNNING') throw new WebUIError('BROWSER_IDENTITY_MISMATCH', 'Absence of the original browser could not be verified; state was preserved.');
+      }
+      return { closed: false, browserRunning: false };
+    }
     await this.connect();
+    const state = await readState(this.config.browserState);
+    if (!this.security?.process) throw new WebUIError('BROWSER_IDENTITY_MISMATCH', 'The close target has no verified process identity; state was preserved.');
+    const verified = await this.security.process({ ...state, executable: this.config.executable, profile: this.config.profile });
+    const signature = value => JSON.stringify(['pid','port','creationTime','processStartIdentity','profile','executable'].map(key => value[key] ?? null));
+    if (verified.pid !== state.pid || verified.port !== state.port || verified.profile !== state.profile ||
+        (state.creationTime && verified.creationTime !== state.creationTime) ||
+        (state.processStartIdentity && verified.processStartIdentity !== state.processStartIdentity)) throw new WebUIError('BROWSER_IDENTITY_MISMATCH', 'The reconnected close target changed identity; state was preserved.');
+    const expectedStart = state.processStartIdentity || (state.creationTime && 'windows:' + state.creationTime);
+    if (!expectedStart) throw new WebUIError('BROWSER_IDENTITY_MISMATCH', 'Creation identity for the close target is unavailable.');
     const session = await this.browser.newBrowserCDPSession();
     await session.send("Browser.close").catch((error) => {
       if (!/closed/i.test(error.message)) throw error;
     });
     await this.disconnect();
     const deadline = Date.now() + this.config.actionTimeout;
-    while (processAlive(state.pid) && Date.now() < deadline) await delay(100);
-    if (processAlive(state.pid)) throw new WebUIError("CLOSE_TIMEOUT", "Browser did not exit after the close request; its state was preserved.");
+    let ended = false;
+    while (Date.now() < deadline) {
+      const [identity, reachable] = await Promise.all([this.inspectPID(state.pid), browserEndpoint(state.port, { fetchImpl: this.fetchImpl })]);
+      const processGone = identity.status === 'DEAD' || (identity.status === 'ALIVE' && identity.identity && identity.identity !== expectedStart);
+      if (signature(await readState(this.config.browserState)) !== signature(state)) throw new WebUIError('BROWSER_STATE_CHANGED', 'A newer browser instance replaced the close target; its state was preserved.');
+      if (processGone && !reachable) { ended = true; break; }
+      await delay(Math.min(100, Math.max(1, deadline - Date.now())));
+    }
+    if (!ended) throw new WebUIError("CLOSE_TIMEOUT", "The original process and debugging endpoint have not both been confirmed ended; state was preserved.");
+    if (signature(await readState(this.config.browserState)) !== signature(state)) throw new WebUIError('BROWSER_STATE_CHANGED', 'Browser identity changed before cleanup; state was preserved.');
     await fs.unlink(this.config.browserState).catch((error) => { if (error.code !== "ENOENT") throw error; });
     return { closed: true };
   }

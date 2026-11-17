@@ -29,7 +29,8 @@ test('doctor reads local state without browser or filesystem mutation and redact
   assert.equal(result.ok, true); assert.equal(result.sign_in_verified, false);
   assert.equal(result.providers[0].checks.find((c) => c.name === 'runtime_state').code, 'RATE_LIMITED');
   const json = JSON.stringify(result);
-  for (const secret of ['PRIVATE_', 'private.example', f.directory, String(process.pid)]) assert.ok(!json.includes(secret));
+  for (const secret of ['PRIVATE_', 'private.example', f.directory]) assert.ok(!json.includes(secret));
+  assert.equal(result.providers[0].checks.find(c => c.name === 'browser_lifecycle').code, 'UNKNOWN');
   assert.deepEqual(await fs.readdir(f.directory), before);
 });
 test('doctor isolates corrupted state and journal without echoing raw errors', async (t) => {

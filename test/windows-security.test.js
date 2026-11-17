@@ -53,6 +53,65 @@ for (const side of ['expected', 'actual']) {
 const currentSid = 'S-1-5-21-111-222-333-1001';
 const outsiderSid = 'S-1-5-21-111-222-333-1002';
 const trustedSids = [currentSid, 'S-1-5-18', 'S-1-5-32-544'];
+const installerSid = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464';
+
+function ancestorSnapshot(rules, ownerSid = currentSid) {
+  return { ...securitySnapshot(), ancestors: [{
+    path: 'C:\\parent', ownerSid, isReparsePoint: false,
+    rules: [{ sid: currentSid, allow: true, mask: 0x1f01ff }, ...rules],
+  }] };
+}
+
+for (const [label, sid, mask] of [
+  ['Everyone DeleteChild', 'S-1-1-0', 64],
+  ['Users ChangePermissions', 'S-1-5-32-545', 262144],
+  ['Users TakeOwnership', 'S-1-5-32-545', 524288],
+]) {
+  test(`ancestor rejects ${label}`, () => {
+    assert.throws(() => validateSecuritySnapshot(ancestorSnapshot([{ sid, allow: true, mask }])), {
+      code: 'PROFILE_ACL_UNSAFE',
+    });
+  });
+}
+
+test('ancestor permits only CreateDirectories for Users', () => {
+  const snapshot = ancestorSnapshot([{ sid: 'S-1-5-32-545', allow: true, mask: 4 }]);
+  assert.equal(validateSecuritySnapshot(snapshot), snapshot);
+});
+
+test('ancestor honors effective same-SID deny before allow', () => {
+  const snapshot = ancestorSnapshot([
+    { sid: outsiderSid, allow: false, mask: 0xD0040 },
+    { sid: outsiderSid, allow: true, mask: 0xD0040 },
+  ]);
+  assert.equal(validateSecuritySnapshot(snapshot), snapshot);
+});
+
+test('ancestor rejects ordered allow before same-SID deny', () => {
+  assert.throws(() => validateSecuritySnapshot(ancestorSnapshot([
+    { sid: outsiderSid, allow: true, mask: 64 },
+    { sid: outsiderSid, allow: false, mask: 64 },
+  ])), { code: 'PROFILE_ACL_UNSAFE' });
+});
+
+test('ancestor skips inherit-only ACEs but rejects applicable inherited risk', () => {
+  const snapshot = ancestorSnapshot([{ sid: 'S-1-1-0', allow: true, mask: 64, inheritOnly: true }]);
+  assert.equal(validateSecuritySnapshot(snapshot), snapshot);
+  snapshot.ancestors[0].rules.push({ sid: 'S-1-1-0', allow: true, mask: 64, inheritOnly: false, inherited: true });
+  assert.throws(() => validateSecuritySnapshot(snapshot), { code: 'PROFILE_ACL_UNSAFE' });
+});
+
+test('ancestor rejects risk in the middle of an otherwise safe chain', () => {
+  const snapshot = ancestorSnapshot([]);
+  snapshot.ancestors.push(ancestorSnapshot([{ sid: outsiderSid, allow: true, mask: 65536 }]).ancestors[0]);
+  snapshot.ancestors.push(ancestorSnapshot([]).ancestors[0]);
+  assert.throws(() => validateSecuritySnapshot(snapshot), { code: 'PROFILE_ACL_UNSAFE' });
+});
+
+test('ancestor accepts normal TrustedInstaller ownership and trusted permissions', () => {
+  const snapshot = ancestorSnapshot([{ sid: installerSid, allow: true, mask: 0x1f01ff }], installerSid);
+  assert.equal(validateSecuritySnapshot(snapshot), snapshot);
+});
 
 function securitySnapshot() {
   return {

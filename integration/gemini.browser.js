@@ -1,6 +1,7 @@
 // Offline browser integration tests. Every Gemini request is intercepted with
 // a deterministic local fixture; no account, live prompt or network is used.
 import test, { before, after } from "node:test";
+import { browserTestTempRoot } from './helpers/temp-root.js';
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -75,7 +76,7 @@ function send(){
 </script></body></html>`;
 
 async function fixture(t) {
-  const root = path.resolve(os.tmpdir());
+  const root = path.resolve(browserTestTempRoot());
   const directory = await fs.mkdtemp(path.join(root, "gemini-browser-test-"));
   const context = await chrome.newContext();
   await context.route("**/*", (route) => route.fulfill({ status: 200, contentType: "text/html", body: fixtureHTML }));
@@ -603,7 +604,7 @@ test("last-minute draft changes are caught before clicking send", async (t) => {
 });
 
 test("dedicated browser persists across disconnects and explicit close terminates it", async (t) => {
-  const root = path.resolve(os.tmpdir());
+  const root = path.resolve(browserTestTempRoot());
   const directory = await fs.mkdtemp(path.join(root, "gemini-runtime-test-"));
   await secureNewFixture(directory);
   const config = { ...geminiConfig({ GEMINI_WEB_DATA_DIR: directory }), url: "about:blank", headless: true, executable: geminiConfig().executable || chromium.executablePath() };

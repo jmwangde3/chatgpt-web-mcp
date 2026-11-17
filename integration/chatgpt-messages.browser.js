@@ -1,6 +1,7 @@
 // Offline DOM regressions. Launch a fresh ephemeral browser and block every
 // request; never attach to the dedicated browser or read its runtime journal.
 import test, { before, after } from 'node:test';
+import { browserTestTempRoot } from './helpers/temp-root.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -393,7 +394,7 @@ test('editing a semantic user turn is detected without treating the ordinary com
 
 async function taskFixture(t) {
   const f = await fixture(t);
-  const root = path.resolve(os.tmpdir());
+  const root = path.resolve(browserTestTempRoot());
   const directory = await fs.mkdtemp(path.join(root, 'chatgpt-message-tasks-'));
   t.after(async () => {
     assert.equal(path.dirname(path.resolve(directory)), root);

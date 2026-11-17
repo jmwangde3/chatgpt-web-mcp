@@ -1,5 +1,6 @@
 // Offline only: real Chromium targets, all HTTP fulfilled locally.
 import test, { before, after } from 'node:test';
+import { browserTestTempRoot } from './helpers/temp-root.js';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
 import { geminiConfig } from '../src/gemini/config.js';
@@ -16,7 +17,7 @@ before(async () => { chrome = await chromium.launch({ executablePath: geminiConf
 after(async () => { await chrome?.close(); });
 
 test('controller timeout and disconnect preserve the dedicated browser, tab and draft', async t => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'persistent-browser-fixture-'));
+  const directory = await fs.mkdtemp(path.join(browserTestTempRoot(), 'persistent-browser-fixture-'));
   await secureNewFixture(directory);
   const runtime = new PersistentBrowser({
     profile: path.join(directory, 'profile'), browserState: path.join(directory, 'browser-state.json'),
