@@ -2,6 +2,8 @@
 
 日期：2026-11-17。审查分支：`review/chatgpt-collaboration-v2`；[草稿PR #1](https://github.com/jmwangde3/chatgpt-web-mcp/pull/1)。
 
+后续更新：本报告以下记录的是实施阶段的验收快照。随后完成了本机部署及限定使用测试，当前服务源码为`59652a9`、配置为可见unified，宿主17工具实际生效；部署发现的隐藏busy误拒绝已修复。当前安装、实际证据、回退及限制见[本机部署报告](LOCAL_DEPLOYMENT_V2.md)。以下“未部署/full”等描述仅指该实施阶段，不代表当前运行配置。
+
 **WORK PACKAGE A：PASS（工程与离线验收）。WORK PACKAGE B：CONDITIONAL（核心真实双模式、功能分批及部分Git边界已验，仍有外部故障边界待验）。OVERALL：CONDITIONAL。**
 
 代码已可审核；不把决策模拟当成全部真实环境测试。未合并、打Tag、发布版本或替换运行中的服务代码；全局MCP连接仍保持原full模式。
