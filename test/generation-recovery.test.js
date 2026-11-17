@@ -33,7 +33,7 @@ const generation = () => ({ active: true, ownerPid: deadPid, url, assistantBefor
 const read = async () => JSON.parse(await fs.readFile(RUNTIME_STATE_FILE, 'utf8'));
 const seed = async () => {
   const state = { activeGeneration: generation(), sentinel: 'preserve' };
-  await fs.writeFile(RUNTIME_STATE_FILE, JSON.stringify(state, null, 2) + '\n', 'utf8');
+  await fs.writeFile(RUNTIME_STATE_FILE, JSON.stringify(state, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
   return state;
 };
 const bytes = () => fs.readFile(RUNTIME_STATE_FILE);
@@ -88,7 +88,7 @@ test('legacy generation without user identity cannot auto-release after a comple
   const state = await seed();
   delete state.activeGeneration.userCount;
   delete state.activeGeneration.promptHash;
-  await fs.writeFile(RUNTIME_STATE_FILE, JSON.stringify(state, null, 2) + '\n', 'utf8');
+  await fs.writeFile(RUNTIME_STATE_FILE, JSON.stringify(state, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
   const before = await bytes();
   const result = await latest(browser());
   assert.equal(result.url, url);
@@ -183,7 +183,7 @@ test('throwing update releases runtime lock without writing state', async () => 
 
 test('repairing a dead update-lock owner does not clear activeGeneration', async () => {
   await seed();
-  await fs.writeFile(RUNTIME_LOCK_FILE, JSON.stringify({ pid: deadPid, token: 'dead-update-owner', processStartIdentity: 'dead', startedAt: 1, operation: 'runtime-state' }), 'utf8');
+  await fs.writeFile(RUNTIME_LOCK_FILE, JSON.stringify({ pid: deadPid, token: 'dead-update-owner', processStartIdentity: 'dead', startedAt: 1, operation: 'runtime-state' }), { encoding: 'utf8', mode: 0o600 });
   await withRuntimeState(async state => ({ state: { ...state, repaired: true } }));
   assert.deepEqual((await read()).activeGeneration, generation());
   assert.equal((await read()).repaired, true);

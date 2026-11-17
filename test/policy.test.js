@@ -56,7 +56,7 @@ test("exited MCP owner cannot release generation without original-page completio
   try {
     await writeFile(runtimeFile, JSON.stringify({
       activeGeneration: { active: true, ownerPid: 2_147_483_647 },
-    }));
+    }), { encoding: 'utf8', mode: 0o600 });
     await isolatedPolicyCheck(`
       import assert from "node:assert/strict";
       import { readFile, writeFile } from "node:fs/promises";
@@ -71,7 +71,7 @@ test("exited MCP owner cannot release generation without original-page completio
       assert.equal(state.lastGenerationInterruptedAt, undefined);
 
       for (const ownerPid of [process.pid, null]) {
-        await writeFile(RUNTIME_STATE_FILE, JSON.stringify({ activeGeneration: { active: true, ownerPid } }));
+        await writeFile(RUNTIME_STATE_FILE, JSON.stringify({ activeGeneration: { active: true, ownerPid } }), { encoding: 'utf8', mode: 0o600 });
         await assert.rejects(browser.assertActionsAllowed("offline-test"), /生成任务/);
       }
     `, { CHATGPT_WEB_RUNTIME_STATE: runtimeFile });
@@ -94,7 +94,7 @@ test('ChatGPT session context isolates production runtime writes while preservin
       const lastUser = 'session policy prompt';
       const expected = { url: generation.url, userCount: 1,
         promptHash: createHash('sha256').update(lastUser).digest('hex') };
-      await writeFile(RUNTIME_STATE_FILE, JSON.stringify({activeGeneration:generation,sessions:{a:{activeGeneration:generation},b:{activeGeneration:generation}}}));
+      await writeFile(RUNTIME_STATE_FILE, JSON.stringify({activeGeneration:generation,sessions:{a:{activeGeneration:generation},b:{activeGeneration:generation}}}), { encoding: 'utf8', mode: 0o600 });
       const a = new ChatGPTBrowser({sessionId:'a'}), b = new ChatGPTBrowser({sessionId:'b'}), fresh = new ChatGPTBrowser({sessionId:'new'});
       a.firstVisible = async () => null;
       a.page = async () => ({ evaluate: async () => ({ url: generation.url,
@@ -109,7 +109,7 @@ test('ChatGPT session context isolates production runtime writes while preservin
       assert.equal(state.sessions.a.activeGeneration,null);
       await fresh.runExclusive(() => fresh.assertActionsAllowed());
       await assert.rejects(b.runExclusive(() => b.assertActionsAllowed()), /生成任务/);
-      await writeFile(RUNTIME_STATE_FILE, JSON.stringify({...await read(),circuitBreaker:{active:true}}));
+      await writeFile(RUNTIME_STATE_FILE, JSON.stringify({...await read(),circuitBreaker:{active:true}}), { encoding: 'utf8', mode: 0o600 });
       await assert.rejects(a.runExclusive(() => a.assertActionsAllowed()), /熔断/);
       await assert.rejects(fresh.runExclusive(() => fresh.assertActionsAllowed()), /熔断/);
       const { chatgptProvider } = await import('./src/providers/adapters.js');
