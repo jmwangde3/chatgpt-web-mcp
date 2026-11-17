@@ -119,6 +119,42 @@ test('a trusted double click sends once and stays ambiguous rather than not_atte
 });
 
 let browser;
+test('hidden aria-busy button outside composer form allows exactly one trusted send', async t => {
+ const f = await fixture(t);
+ await f.page.evaluate(() => {
+  const busy = document.createElement('button');
+  busy.setAttribute('aria-busy', 'true');
+  busy.hidden = true;
+  document.body.append(busy);
+ });
+ // Pin the original send button: the fixture locator also matches the busy button.
+ const button = f.page.locator('form button');
+ let clicks = 0;
+ await guardedSend({...f, button, click: async b => {clicks++; await b.click();}});
+ assert.equal(clicks, 1);
+ assert.deepEqual(await f.page.evaluate(() => [window.count, window.trusted]), [1, true]);
+});
+
+for (const placement of ['visible outside', 'hidden inside']) {
+ test(`${placement} aria-busy button blocks a trusted send`, async t => {
+  const f = await fixture(t);
+  const button = f.page.locator('form button').first();
+  await f.page.evaluate(placement => {
+   const busy = document.createElement('button');
+   busy.textContent = 'Busy';
+   busy.setAttribute('aria-busy', 'true');
+   busy.hidden = placement === 'hidden inside';
+   (busy.hidden ? document.querySelector('form') : document.body).append(busy);
+  }, placement);
+  let clicks = 0;
+  await assert.rejects(guardedSend({...f, button, click: async b => {clicks++; await b.click();}}),
+   e => e.code === 'SEND_NOT_ATTEMPTED' && e.sendOutcome === 'not_attempted');
+  // The production capture guard rejects the trusted click before application handlers.
+  assert.equal(clicks, 1);
+  assert.deepEqual(await f.page.evaluate(() => [window.count, window.trusted]), [0, false]);
+ });
+}
+
 before(async()=>{ browser=await chromium.launch({headless:true}); });
 after(async()=>{await browser?.close();});
 async function fixture(t){

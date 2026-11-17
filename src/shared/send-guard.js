@@ -25,7 +25,8 @@ export function bootstrapSendGuard() {
         (composer.isContentEditable || composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) &&
         text(composer) === expectedText &&
         Boolean(composer.closest('form')) && button.closest('form') === composer.closest('form') &&
-        !doc.querySelector('[role="progressbar"], [data-state="uploading"], [data-testid*="upload-progress"], [aria-busy="true"]');
+        !doc.querySelector('[role="progressbar"], [data-state="uploading"], [data-testid*="upload-progress"]') &&
+        ![...doc.querySelectorAll('[aria-busy="true"]')].some(node => visible(node) || composer.closest('form')?.contains(node));
     } catch { valid = false; }
     state.outcome = valid ? 'allowed' : state.attempted ? 'uncertain' : 'rejected';
     if (valid) state.attempted = true;
