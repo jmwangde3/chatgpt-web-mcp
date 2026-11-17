@@ -1,5 +1,7 @@
 # Private GitHub access probe
 
+Public copy sanitized: the private synthetic repository name and original random marker value are withheld; the original evidence is retained only in a local untracked backup. Conclusions and evidence types below are unchanged.
+
 Only repository/branch/SHA/path metadata was sent. The source marker value was not disclosed in the prompt. Codex independently confirmed the fixture repository is private.
 
 VERIFIED — 读取成功
@@ -21,7 +23,7 @@ Repository
 
 
 
-jmwangde3/chatgpt-collaboration-private-fixture
+[私有合成测试仓库名称已脱敏]
 
 
 
@@ -90,15 +92,15 @@ UTF-8
 
 REVIEW_ACCESS_MARKER
 
-逐字读取结果：
+历史逐字读取证据（以下为脱敏摘要，不是原始源码）：
 
 Python
 运行
-REVIEW_ACCESS_MARKER = 'private-fixture-e138646ab5254503'
+[源码证据：成功读取未在提示词中提供的随机标记；原始值已脱敏]
 
-完整字符串：
+随机标记证据：
 
-private-fixture-e138646ab5254503
+[私有合成测试随机标记原始值已脱敏]
 
 最终判定
 

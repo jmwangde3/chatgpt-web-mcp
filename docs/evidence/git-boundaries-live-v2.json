@@ -4,9 +4,9 @@
   "scope": "G06-G09 real Git operations and Agent-enforced Skill gates; no Web review",
   "fixture_repository": "https://github.com/jmwangde3/chatgpt-collaboration-review-fixture.git",
   "skill_sources": [
-    "skills/codex-chatgpt-review-github/SKILL.md",
-    "skills/codex-chatgpt-review-github/references/github-review-workflow.md",
-    "skills/codex-chatgpt-review-github/references/code-review-protocol.md"
+    "skills/gh-review/SKILL.md",
+    "skills/gh-review/references/github-review-workflow.md",
+    "skills/gh-review/references/code-review-protocol.md"
   ],
   "temporary_workspace_id": "git-boundaries-v2-rebo0xcz",
   "cleanup": "not performed; only self-created temporary workspace retained",
@@ -464,5 +464,11 @@
     "No ChatGPT Web review was submitted.",
     "No GitHub settings, visibility, default branches, global identity or project code changed.",
     "Local fixture-only tests do not establish GitHub end-to-end review PASS."
-  ]
+  ],
+  "historical_skill_sources": [
+    "skills/codex-chatgpt-review-github/SKILL.md",
+    "skills/codex-chatgpt-review-github/references/github-review-workflow.md",
+    "skills/codex-chatgpt-review-github/references/code-review-protocol.md"
+  ],
+  "evidence_scope": "Historical V2.0 execution; source paths have V2.1 aliases. This is not a rerun of the changed candidate."
 }

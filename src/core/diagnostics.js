@@ -71,7 +71,7 @@ export async function diagnose(kernel, ids = [...kernel.providers.keys()]) {
     } catch { check('task_journal', 'fail', 'INVALID_JOURNAL', 'Inspect and restore the local journal privately; preserve duplicate-request records.'); }
     const controllers = [];
     for (const item of [adapter, ...[...(kernel.sessions?.values() || [])].filter(p => p.id === id)]) {
-      if (item.browser.controllerDiagnostics) controllers.push(await item.browser.controllerDiagnostics());
+      if (item.browser?.controllerDiagnostics) controllers.push(await item.browser.controllerDiagnostics());
     }
     return { provider: id, ok: !checks.some((item) => item.status === 'fail'), checks, controllers };
   }));

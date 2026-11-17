@@ -288,5 +288,6 @@
     "case_count": 25,
     "scope": "routing and stop/continue decisions only; not real external failure injection",
     "claim": "simulation decisions matched; no assertion of 25 real-world integration PASS"
-  }
+  },
+  "evidence_scope": "Historical V2.0 execution; source paths have V2.1 aliases. This is not a rerun of the changed candidate."
 }

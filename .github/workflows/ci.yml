@@ -27,6 +27,7 @@ jobs:
         env:
           CHATGPT_WEB_MCP_TOOLSET: unified
       - run: npm pack --dry-run
+      - run: npm run verify:package
 
   offline-browser-tests:
     strategy:
@@ -46,4 +47,3 @@ jobs:
       - run: npx playwright-core install chromium
         if: runner.os == 'Windows'
       - run: npm run test:browser
-      - run: node --test integration/send-guard.browser.js integration/windows-security.browser.js integration/fenced-identity.browser.js
