@@ -15,7 +15,7 @@ const fingerprint = (value) => createHash('sha256').update(JSON.stringify(value)
 const terminal = new Set(['completed', 'cancelled', 'failed', 'abandoned']);
 export function canonicalURL(value) { const u = new URL(value); return u.origin + u.pathname.replace(/\/$/, ''); }
 export function taskView(task) {
-  const { baseline, promptHash, requestHash, fingerprint, ...publicFields } = task;
+  const { baseline, targetUserMessageId, promptHash, requestHash, fingerprint, ...publicFields } = task;
   return { ...publicFields, recovery: recoveryFor(task) };
 }
 
@@ -42,6 +42,29 @@ export function validateJournal(raw, id) {
 
 const activeIn = (state, sessionId) => Object.values(state.tasks).find(t => !terminal.has(t.state) && t.session_id === sessionId);
 const releaseTask = (state, task) => { if (state.active === task.task_id) state.active = null; };
+const strictIdentity = adapter => adapter.id === 'chatgpt' && adapter.messageIdentityVersion === 1;
+function requireIdentityTarget(task) {
+  if (task.messageIdentityVersion !== 1 || !task.targetUserMessageId) {
+    throw new WebUIError('LEGACY_IDENTITY_UNVERIFIED', 'No persisted stable user identity is available; tracking remains reserved.');
+  }
+}
+function verifyTaskIdentity(task, observed, { confirming = false, adapter } = {}) {
+  const target = confirming ? observed.userMessageId : task.targetUserMessageId;
+  const baselineURL = canonicalURL(task.baseline.url);
+  const expected = task.conversation_url || (!adapter.isRoot(baselineURL) ? baselineURL : null);
+  if (typeof target !== 'string' || !target.trim() || target === task.baseline.userMessageId
+    || (task.targetUserMessageId && task.targetUserMessageId !== target)
+    || observed.userMessageId !== target
+    || (expected && canonicalURL(observed.url) !== canonicalURL(expected))
+    || !matchesUserPrompt(task.promptHash, observed.lastUser, observed.identityCandidates)) {
+    throw new WebUIError('SEND_UNCONFIRMED', 'Stable user identity or full prompt does not match; tracking remains reserved.');
+  }
+}
+function controlIdentity(task, observed, adapter) {
+  return { url: observed.url, userCount: observed.userCount, promptHash: task.promptHash,
+    ...(strictIdentity(adapter) ? { messageIdentityVersion: 1, userMessageId: task.targetUserMessageId,
+      targetUserMessageId: task.targetUserMessageId, managedTaskId: task.task_id } : {}) };
+}
 
 // Aging is advisory only; it never changes occupancy or persisted state.
 function taskAge(task, now) {
@@ -183,20 +206,40 @@ export class TaskKernel {
           const beforeSubmit = async () => { task.state = 'submitting'; task.updated_at = Date.now(); await save(); };
           if (!adapter.stagedSend) await beforeSubmit();
           let sent;
-          try { sent = await adapter.send({ prompt, files, existing_draft, beforeSubmit }); }
+          const onIdentityConfirmed = async observed => {
+            try { verifyTaskIdentity(task, observed, { confirming: true, adapter }); }
+            catch (error) { throw new WebUIError('TASK_IDENTITY_CHANGED', error.message); }
+            task.targetUserMessageId = observed.userMessageId;
+            task.messageIdentityVersion = 1;
+            task.updated_at = Date.now();
+            await save();
+          };
+          try { sent = await adapter.send({ prompt, files, existing_draft, beforeSubmit,
+            ...(strictIdentity(adapter) ? { baseline: task.baseline, managedTaskId: task.task_id, onIdentityConfirmed } : {}) }); }
           catch (error) {
             // Acknowledgement can render just after the browser timeout.
             // Reconcile once, read-only, while still owning the session lock.
             // Never infer delivery from a cleared composer or URL alone.
             if (error.code !== 'SEND_UNCONFIRMED') throw error;
+            if (strictIdentity(adapter) && !task.targetUserMessageId) throw error;
             const observed = await adapter.inspect();
+            if (strictIdentity(adapter)) {
+              verifyTaskIdentity(task, observed, { adapter });
+            }
             if (!adapter.isRoot(baselineURL) && !adapter.isProvisional?.(baselineURL) && canonicalURL(observed.url) !== baselineURL) throw error;
-            if (observed.userCount !== task.baseline.userCount + 1 || !matchesUserPrompt(task.promptHash, observed.lastUser, id === 'chatgpt' ? observed.identityCandidates : [])) throw error;
+            if (!strictIdentity(adapter) && (observed.userCount !== task.baseline.userCount + 1 || !matchesUserPrompt(task.promptHash, observed.lastUser, id === 'chatgpt' ? observed.identityCandidates : []))) throw error;
             sent = { url: observed.url };
           }
-          task.state = 'submitted'; task.submitted_at = Date.now(); task.updated_at = task.submitted_at;
-          const acknowledgement = adapter.restore ? await adapter.inspect() : null;
-          const identityConfirmed = !acknowledgement || (acknowledgement.userCount === task.baseline.userCount + 1 && matchesUserPrompt(task.promptHash, acknowledgement.lastUser, id === 'chatgpt' ? acknowledgement.identityCandidates : []));
+          if (!strictIdentity(adapter)) {
+            task.state = 'submitted'; task.submitted_at = Date.now(); task.updated_at = task.submitted_at;
+          }
+          const acknowledgement = strictIdentity(adapter) || adapter.restore ? await adapter.inspect() : null;
+          if (strictIdentity(adapter)) {
+            if (!task.targetUserMessageId) throw new WebUIError('SEND_UNCONFIRMED', 'No send-time identity confirmation was persisted.');
+            verifyTaskIdentity(task, acknowledgement, { adapter });
+            task.state = 'submitted'; task.submitted_at = Date.now(); task.updated_at = task.submitted_at;
+          }
+          const identityConfirmed = strictIdentity(adapter) || !acknowledgement || (acknowledgement.userCount === task.baseline.userCount + 1 && matchesUserPrompt(task.promptHash, acknowledgement.lastUser, id === 'chatgpt' ? acknowledgement.identityCandidates : []));
           const sentURL = acknowledgement?.url || sent.url;
           if (identityConfirmed && sentURL && !adapter.isRoot(canonicalURL(sentURL)) && !adapter.isProvisional?.(sentURL)) task.conversation_url = canonicalURL(sentURL);
           await save();
@@ -257,6 +300,14 @@ export class TaskKernel {
       if (!task) throw new WebUIError('TASK_NOT_FOUND', 'Task not found.');
       const revalidate = refresh && task.state === 'completed' && !cancel;
       if (terminal.has(task.state) && !revalidate) return taskView(task);
+      const adapter = this.adapter(id, task.session_id);
+      if (strictIdentity(adapter) && task.state === 'completed' && (!task.targetUserMessageId || task.messageIdentityVersion !== 1)) return taskView(task);
+      if (strictIdentity(adapter) && !terminal.has(task.state)) {
+        try { requireIdentityTarget(task); } catch (error) {
+          task.state = 'uncertain'; task.error = { code: error.code, message: error.message };
+          task.updated_at = Date.now(); await save(); return taskView(task);
+        }
+      }
       if (revalidate) {
         if (Object.values(state.tasks).some(t => t.task_id !== taskId && t.session_id === task.session_id && (t.created_at >= task.created_at || !terminal.has(t.state)))) throw new WebUIError('TASK_SUPERSEDED', 'A later task uses this session. The cached result is preserved; inspect history separately.');
         task.previous_response = task.response;
@@ -268,7 +319,6 @@ export class TaskKernel {
         task.state = 'failed'; task.blocking = false; releaseTask(state, task);
         task.error = { code: 'PREFLIGHT_INTERRUPTED', message: 'Interrupted before sending. No automatic retry.' }; await save(); return taskView(task);
       }
-      const adapter = this.adapter(id, task.session_id);
       const previousState = task.state, previousError = task.error;
       let observationOnly = !cancel && !revalidate;
       try {
@@ -284,7 +334,11 @@ export class TaskKernel {
           signal?.throwIfAborted();
           const url = canonicalURL(observed.url);
           if (url !== expected && !root) throw new WebUIError('CONVERSATION_CHANGED', 'Open the task conversation before resuming it.');
-          const acknowledged = observed.userCount === task.baseline.userCount + 1 && matchesUserPrompt(task.promptHash, observed.lastUser, id === 'chatgpt' ? observed.identityCandidates : []);
+          if (strictIdentity(adapter)) {
+            requireIdentityTarget(task);
+            verifyTaskIdentity(task, observed, { adapter });
+          }
+          const acknowledged = strictIdentity(adapter) || (observed.userCount === task.baseline.userCount + 1 && matchesUserPrompt(task.promptHash, observed.lastUser, id === 'chatgpt' ? observed.identityCandidates : []));
           // UI acknowledgement may arrive after submitPrompt(wait:false).
           // Briefly keep observing an unchanged baseline, without a retry.
           if (!acknowledged && !cancel && task.state === 'submitted' && task.submitted_at && Date.now() - task.submitted_at < 20000 && observed.userCount === task.baseline.userCount && observed.responseCount === task.baseline.responseCount) return;
@@ -292,13 +346,14 @@ export class TaskKernel {
           // From here the callback may mutate task state or settle generation.
           // A timeout after this boundary is not a purely observational timeout.
           observationOnly = false;
-          const identity = { url: observed.url, userCount: observed.userCount, promptHash: task.promptHash };
+          const identity = controlIdentity(task, observed, adapter);
           if (!adapter.isProvisional?.(url)) task.conversation_url = url;
           if (task.retry_count && !task.retry_activity) {
             if (observed.busy || (observed.text && observed.text !== task.previous_response?.text)) task.retry_activity = true;
             else throw new WebUIError('RETRY_UNCONFIRMED', 'Only the previous answer is visible; retry completion is not confirmed. Do not click again.');
           }
-          if (observed.complete && observed.responseCount > task.baseline.responseCount) {
+          const newResponse = strictIdentity(adapter) ? typeof observed.responseId === 'string' && !!observed.responseId.trim() && observed.responseId !== task.baseline.responseId : observed.responseCount > task.baseline.responseCount;
+          if (observed.complete && newResponse) {
             await adapter.settle(identity);
             task.state = 'completed'; task.blocking = false; releaseTask(state, task);
             task.response = { text: observed.text, format: 'plain_text', complete: true, model: observed.model || null, url: observed.url };
@@ -360,19 +415,34 @@ export class TaskKernel {
       if (!task) throw new WebUIError('TASK_NOT_FOUND', 'Task not found.');
       if (terminal.has(task.state)) return taskView(task);
       const adapter = this.adapter(id, task.session_id);
+      if (strictIdentity(adapter)) {
+        try { requireIdentityTarget(task); } catch (error) {
+          task.state = 'uncertain'; task.error = { code: error.code, message: error.message };
+          task.updated_at = Date.now(); await save(); return taskView(task);
+        }
+      }
+      try {
       await adapter.browser.runExclusive(async () => {
         const observed = await adapter.inspect({ allowPageError: true });
         const saved = task.conversation_url;
         const expected = saved && !adapter.isProvisional?.(saved) ? saved : task.baseline?.url;
         if (!expected || canonicalURL(observed.url) !== canonicalURL(expected)) throw new WebUIError('CONVERSATION_CHANGED', 'Return to the original page before abandoning tracking.');
+        if (strictIdentity(adapter)) {
+          verifyTaskIdentity(task, observed, { adapter });
+        }
         if (observed.busy) throw new WebUIError('GENERATING', 'Generation is active. Use chat_cancel for the verified task.');
-        const sent = observed.userCount === task.baseline.userCount + 1 && matchesUserPrompt(task.promptHash, observed.lastUser, id === 'chatgpt' ? observed.identityCandidates : []);
+        const sent = strictIdentity(adapter) || (observed.userCount === task.baseline.userCount + 1 && matchesUserPrompt(task.promptHash, observed.lastUser, id === 'chatgpt' ? observed.identityCandidates : []));
         const baseline = observed.userCount === task.baseline.userCount && observed.responseCount === task.baseline.responseCount &&
           matchesUserPrompt(task.baseline.baselineHash, observed.lastUser);
         if (!sent && !baseline) throw new WebUIError('TASK_IDENTITY_CHANGED', 'Neither the original sent turn nor the complete original baseline is confirmed; tracking was preserved.');
-        await adapter.settle({ url: observed.url, userCount: observed.userCount, promptHash: task.promptHash,
+        await adapter.settle({ ...controlIdentity(task, observed, adapter),
           ...(sent ? {} : { baselineOnly: true, baselineHash: task.baseline.baselineHash, responseCount: task.baseline.responseCount }) }, { allowIdle: true });
       }, { signal, name: 'chat_abandon' });
+      } catch (error) {
+        if (!strictIdentity(adapter)) throw error;
+        task.state = 'uncertain'; task.error = { code: error.code || 'PROVIDER_ERROR', message: error.message.split('\n')[0] };
+        task.updated_at = Date.now(); await save(); return taskView(task);
+      }
       task.state = 'abandoned'; task.blocking = false; task.updated_at = Date.now();
       task.error = { code: 'TRACKING_ABANDONED', message: 'Tracking explicitly abandoned. Delivery and completion are not asserted; the request_id remains reserved.' };
       releaseTask(state, task); await save(); return taskView(task);

@@ -47,6 +47,7 @@ export async function guardedStop({ page, expected, users, stops, readIdentity, 
     const snapshot = await page.evaluate(`(() => { const s = ${JSON.stringify(users)}; const e = [...document.querySelectorAll(s)].at(-1); return e ? (${readIdentity.toString()})(e, s) : null; })()`);
     if (!snapshot) throw refused('Original user node is unavailable.');
     if (!snapshot.isLast || snapshot.url !== expected.url || snapshot.count !== expected.userCount ||
+        (expected.userMessageId !== undefined && snapshot.lastId !== expected.userMessageId) ||
         !matchesUserPrompt(expected.promptHash, snapshot.lastText, snapshot.identityCandidates)) throw refused('Original user identity changed.');
     if (!await page.evaluate(installStopGuard, { key, users, stops, snapshot })) throw refused('Stop nodes changed before guard installation.');
     button = (await page.evaluateHandle(key => window[key]?.button, key)).asElement();
@@ -73,6 +74,7 @@ export async function guardedStop({ page, expected, users, stops, readIdentity, 
     await page.waitForFunction(stops => ![...document.querySelectorAll(stops)].some(e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden'), stops, { timeout: 20000 });
     const after = await page.evaluate(`(${readIdentity.toString()})(window[${JSON.stringify(key)}].user, ${JSON.stringify(users)})`);
     if (!after.isLast || after.url !== expected.url || after.count !== expected.userCount || after.lastHTML !== snapshot.lastHTML ||
+        (expected.userMessageId !== undefined && after.lastId !== expected.userMessageId) ||
         !matchesUserPrompt(expected.promptHash, after.lastText, after.identityCandidates)) throw refused('Task identity changed after stop.');
   } finally {
     if (inspector) {

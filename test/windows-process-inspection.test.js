@@ -30,6 +30,11 @@ async function inspect(expected, evidence) {
   return result;
 }
 
+test('empty Windows process record without a listener means the browser exited', async () => {
+  const { expected } = fixture();
+  assert.equal((await inspect(expected, { recorded: {}, listeners: [] })).state, 'NOT_RUNNING');
+});
+
 test('matching recorded PID without a listener is PROCESS_MATCHED_NO_CDP', async () => {
   const { expected, evidence } = fixture();
   const result = await inspect(expected, evidence);

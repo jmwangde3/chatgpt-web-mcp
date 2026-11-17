@@ -28,7 +28,7 @@ export function bootstrapSendGuard() {
       if (!valid) { event.preventDefault(); event.stopImmediatePropagation(); }
       return;
     }
-    const { composer, button, expectedText, expectedURL, allowedOrigin, gemini, binding } = state.active;
+    const { composer, button, expectedText, expectedURL, allowedOrigin, gemini, binding, baselineUser } = state.active;
     const target = event.composedPath();
     if (!target.includes(button)) return;
     let valid = false;
@@ -41,6 +41,13 @@ export function bootstrapSendGuard() {
         !composer.disabled && !composer.readOnly &&
         (composer.isContentEditable || composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) &&
         text(composer) === expectedText &&
+        (!baselineUser || (() => {
+          const nodes = [...doc.querySelectorAll(baselineUser.selectors)];
+          const user = nodes.at(-1) ?? null;
+          return nodes.length === baselineUser.count && user === binding.user &&
+            (baselineUser.count === 0 || (user.ownerDocument === doc && user.isConnected &&
+              user.outerHTML === baselineUser.lastHTML && binding.readId(user) === baselineUser.lastId));
+        })()) &&
         (gemini ? location.origin === 'https://gemini.google.com' && binding?.valid &&
           binding.region.isConnected && composer.closest(gemini.region) === binding.region &&
           button.closest(gemini.region) === binding.region &&
@@ -71,6 +78,23 @@ export function bootstrapSendGuard() {
 export function installSendGuard(input) {
   const state = window.__webChatSendGate;
   if (!state || state.active) return false;
+  if (input.baselineUser) {
+    const b = input.baselineUser;
+    const readId = user => {
+      const direct = user.getAttribute('data-message-id');
+      if (direct?.trim()) return direct;
+      const ids = user.closest('[data-chatgpt-search-message-ids]')?.getAttribute('data-chatgpt-search-message-ids')?.trim().split(/\s+/u);
+      return ids?.length === 1 && ids[0] ? ids[0] : null;
+    };
+    try {
+      const nodes = [...document.querySelectorAll(b.selectors)];
+      const user = nodes.at(-1) ?? null;
+      if (!Number.isInteger(b.count) || b.count < 0 || nodes.length !== b.count ||
+          (b.count === 0 ? b.lastId !== null || b.lastHTML !== null :
+            !b.lastId || user.outerHTML !== b.lastHTML || readId(user) !== b.lastId)) return false;
+      input.binding = { user, readId };
+    } catch { return false; }
+  }
   if (input.gemini) {
     const g = input.gemini;
     const region = input.composer.closest(g.region);
@@ -84,7 +108,7 @@ export function installSendGuard(input) {
   return true;
 }
 
-export async function guardedSend({ page, composer, button, expectedText, expectedURL, allowedOrigin, click, gemini }) {
+export async function guardedSend({ page, composer, button, expectedText, expectedURL, allowedOrigin, click, gemini, baselineUser }) {
   const key = `__web_chat_send_${globalThis.crypto.randomUUID().replaceAll('-', '')}`;
   // Handle references pin the exact nodes, never resolve a second selector.
   const composerHandle = await composer.elementHandle();
@@ -94,7 +118,7 @@ export async function guardedSend({ page, composer, button, expectedText, expect
   }
   let inspector;
   try {
-    const installed = await page.evaluate(installSendGuard, { composer: composerHandle, button: buttonHandle, expectedText, expectedURL, allowedOrigin, key, gemini });
+    const installed = await page.evaluate(installSendGuard, { composer: composerHandle, button: buttonHandle, expectedText, expectedURL, allowedOrigin, key, gemini, baselineUser });
     if (!installed) throw Object.assign(new Error('Early send guard is unavailable; refresh the bound conversation before preparing the draft.'), {code:'SEND_NOT_ATTEMPTED',sendOutcome:'not_attempted'});
     // A capture listener registered on window earlier could already send before
     // our rejection. CDP must prove ours is the first window click-capture handler.

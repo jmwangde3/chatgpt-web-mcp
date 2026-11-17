@@ -77,7 +77,7 @@ if(-not $p){throw 'missing listener process'}
 const processInspectionScript = `
 $p=Get-CimInstance Win32_Process -Filter ("ProcessId="+[int]$q.pid)
 $listeners=@(Get-NetTCPConnection -State Listen -ErrorAction Stop|Where-Object {$_.LocalPort -eq [int]$q.port})
-$convert={param($p) if($p){@{pid=[int]$p.ProcessId;parentPid=[int]$p.ParentProcessId;creationTime=$p.CreationDate.ToUniversalTime().ToString('o');executable=$p.ExecutablePath;commandLine=$p.CommandLine}}}
+$convert={param($p) if($null -ne $p -and $p.ProcessId){@{pid=[int]$p.ProcessId;parentPid=[int]$p.ParentProcessId;creationTime=$p.CreationDate.ToUniversalTime().ToString('o');executable=$p.ExecutablePath;commandLine=$p.CommandLine}}}
 $recorded=&$convert $p
 $owners=@($listeners|ForEach-Object {$owner=Get-CimInstance Win32_Process -Filter ("ProcessId="+[int]$_.OwningProcess);$item=&$convert $owner;if($item){$item.ownerPid=[int]$_.OwningProcess;$item.port=[int]$_.LocalPort;$item.address=$_.LocalAddress;$item}})
 @{recorded=$recorded;listeners=$owners}|ConvertTo-Json -Depth 6 -Compress
@@ -88,7 +88,7 @@ export async function inspectWindowsBrowserProcess(expected, { query = windowsQu
   try {
     const evidence = await query(processInspectionScript, { pid: expected.pid, port: expected.port });
     if (!Array.isArray(evidence.listeners)) return { state: 'UNKNOWN' };
-    if (!evidence.recorded) {
+    if (!evidence.recorded || (typeof evidence.recorded === 'object' && !Array.isArray(evidence.recorded) && Object.keys(evidence.recorded).length === 0)) {
       if (!evidence.listeners.length) return { state: 'NOT_RUNNING' };
       if (evidence.listeners.length !== 1) return { state: 'IDENTITY_MISMATCH' };
       const identity = await verifyWindowsProcess(expected, { query: async () => evidence.listeners[0] });
