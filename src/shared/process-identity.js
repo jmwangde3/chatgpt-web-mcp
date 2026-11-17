@@ -17,7 +17,12 @@ export async function inspectProcessIdentity(pid, { platform = process.platform,
       identity = 'windows:' + value.creationTime;
     } else if (platform === 'linux') {
       const [stat, boot] = await Promise.all([read(`/proc/${pid}/stat`, 'utf8'), read('/proc/sys/kernel/random/boot_id', 'utf8')]);
-      const start = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[19];
+      const end = stat.lastIndexOf(')');
+      if (end < 0 || !/^\d+ \(/.test(stat) || !/^\s/.test(stat.slice(end + 1))) throw Error('Unverified process');
+      const fields = stat.slice(end + 1).trim().split(/\s+/);
+      if (!/^[A-Za-z]$/.test(fields[0])) throw Error('Unverified process');
+      if (fields[0] === 'Z' || fields[0] === 'X') return { status: 'DEAD', identity: null };
+      const start = fields[19];
       if (!/^\d+$/.test(start || '') || !/^[a-f0-9-]+$/i.test(boot.trim())) throw Error('Unverified process');
       identity = `linux:${boot.trim()}:${start}`;
     } else if (platform === 'darwin') {

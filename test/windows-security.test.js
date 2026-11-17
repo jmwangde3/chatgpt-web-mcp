@@ -156,13 +156,22 @@ for (const index of [0, 1]) {
   }
 
   for (const [label, rule] of [
-    ['read-only allow', { sid: outsiderSid, allow: true, write: false }],
     ['write deny', { sid: outsiderSid, allow: false, write: true }],
   ]) {
     test(`security snapshot accepts outsider ${label} on a ${kind}`, () => {
       const snapshot = securitySnapshot();
       snapshot.entries[index].rules.push(rule);
       assert.deepEqual(validateSecuritySnapshot(snapshot), snapshot);
+    });
+  }
+
+  for (const [label, mask] of [['read-only', 0x20089], ['readData/listDirectory', 1], ['readEA', 8], ['readAttr', 128], ['readControl', 0x20000]]) {
+    test(`security snapshot rejects outsider ${label} on a ${kind} without mutation`, () => {
+      const snapshot = securitySnapshot();
+      snapshot.entries[index].rules.push({ sid: outsiderSid, allow: true, write: false, mask });
+      const before = structuredClone(snapshot);
+      assert.throws(() => validateSecuritySnapshot(snapshot), { code: 'PROFILE_ACL_UNSAFE' });
+      assert.deepEqual(snapshot, before);
     });
   }
 
@@ -176,5 +185,15 @@ for (const index of [0, 1]) {
     const snapshot = securitySnapshot();
     snapshot.entries[index].ownerSid = outsiderSid;
     assert.throws(() => validateSecuritySnapshot(snapshot));
+  });
+}
+
+for (const [label, inheritanceFlags] of [['directories', 1], ['files', 2], ['both', 3]]) {
+  test(`security snapshot rejects inherit-only read access for future ${label}`, () => {
+    const snapshot = securitySnapshot();
+    snapshot.entries[0].rules.push({ sid: outsiderSid, allow: true, mask: 1, inheritOnly: true, inheritanceFlags });
+    const before = structuredClone(snapshot);
+    assert.throws(() => validateSecuritySnapshot(snapshot), { code: 'PROFILE_ACL_UNSAFE' });
+    assert.deepEqual(snapshot, before);
   });
 }

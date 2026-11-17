@@ -12,7 +12,10 @@ import { geminiConfig } from "../src/gemini/config.js";
 import { PersistentBrowser, processAlive, readState } from "../src/shared/persistent-browser.js";
 import { TaskKernel } from "../src/core/tasks.js";
 import { geminiProvider } from "../src/providers/adapters.js";
-import { secureNewFixture } from "./private-fixture.js";
+import { secureNewFixture, traceFixtureSecurity } from "./private-fixture.js";
+import { bootstrapSendGuard } from '../src/shared/send-guard.js';
+import { textHash } from '../src/shared/user-message-identity.js';
+import { verifyWindowsPaths, windowsQuery } from '../src/shared/windows-security.js';
 
 let chrome;
 before(async () => { chrome = await chromium.launch({ executablePath: geminiConfig().executable || chromium.executablePath(), headless: true }); });
@@ -23,12 +26,12 @@ test('long attachment names use exact accessible descriptions and reject mismatc
   b.config.actionTimeout=3000;
   await page.evaluate(()=>{
     const d=document.createElement('div');d.id='full-file';d.hidden=true;d.textContent='完整的很长中文研究方案.md';document.body.append(d);
-    const e=document.createElement('file-preview');e.innerHTML='<div aria-describedby="full-file"><span class="gem-attachment-text">完整的...方案</span></div>';document.body.append(e);
+    const e=document.createElement('file-preview');e.innerHTML='<div aria-describedby="full-file"><span class="gem-attachment-text">完整的...方案</span></div>';document.querySelector('input-area').append(e);
   });
   await b.waitForUploads([path.join(os.tmpdir(),'完整的很长中文研究方案.md')],{exact:true});
   b.config.actionTimeout=250;
   await assert.rejects(b.waitForUploads([path.join(os.tmpdir(),'另一个研究方案.md')],{exact:true}));
-  await page.evaluate(()=>{const e=document.createElement('file-preview');e.textContent='unexpected.txt';document.body.append(e);});
+  await page.evaluate(()=>{const e=document.createElement('file-preview');e.textContent='unexpected.txt';document.querySelector('input-area').append(e);});
   await assert.rejects(b.waitForUploads([path.join(os.tmpdir(),'完整的很长中文研究方案.md')],{exact:true}));
 });
 
@@ -36,7 +39,7 @@ test('explicit existing draft submission preserves attachments and sends once', 
   const {b,page,directory}=await fixture(t);
   const kernel=new TaskKernel([geminiProvider(b)],{directory:path.join(directory,'tasks')});
   await b.writePrompt('recover\n\nthis draft');
-  await page.evaluate(()=>{const e=document.createElement('file-preview');e.textContent='material.txt';document.body.append(e);});
+  await page.evaluate(()=>{const e=document.createElement('file-preview');e.textContent='material.txt';document.querySelector('input-area').append(e);});
   const file=path.join(directory,'material.txt');await fs.writeFile(file,'fixture material');
   const input={provider:'gemini',request_id:'recover-draft',prompt:'recover this draft',files:[file],existing_draft:true};
   assert.equal((await kernel.send({...input,request_id:'mismatch',prompt:'different'})).error.code,'DRAFT_MISMATCH');
@@ -47,15 +50,17 @@ test('explicit existing draft submission preserves attachments and sends once', 
 });
 
 const fixtureHTML = `<!doctype html><html><body>
-<style>user-query, model-response, message-content { display:block; }</style>
+<style>user-query, model-response, message-content, input-area { display:block; } [contenteditable] { white-space:pre-wrap; }</style>
 <a aria-label="Google Account">Account</a>
 <a href="/app/older">Previous chat</a>
 <main id="messages"></main>
+<input-area>
 <rich-textarea><div contenteditable="true" role="textbox" aria-label="Enter a prompt here"></div></rich-textarea>
 <button aria-label="Open mode picker" onclick="document.querySelector('#models').hidden=!document.querySelector('#models').hidden">Fast</button>
 <div id="models" role="menu" hidden><button role="menuitem" data-mode-id="fixture-mode" onclick="document.querySelector('[aria-label=\\'Open mode picker\\']').textContent='Thinking';this.classList.add('selected');this.parentElement.hidden=true"><span class="label">Thinking</span><span class="sublabel">Advanced reasoning</span></button><button role="menuitem">Extended thinking</button></div>
-<input type="file" multiple onchange="for (const f of this.files) {const e=document.createElement('file-preview'); e.textContent=f.name; document.body.append(e)}">
+<input type="file" multiple onchange="for (const f of this.files) {const e=document.createElement('file-preview'); e.textContent=f.name; this.closest('input-area').append(e)}">
 <button aria-label="Send message" onclick="send()">Send</button>
+</input-area>
 <script>
 window.sendCount=0;window.slow=false;
 document.addEventListener('keydown', e=>{if(e.key==='Escape')document.querySelector('#models').hidden=true});
@@ -75,21 +80,38 @@ function send(){
 }
 </script></body></html>`;
 
-async function fixture(t) {
+async function fixture(t, { url = 'https://gemini.google.com/app/fixture' } = {}) {
   const root = path.resolve(browserTestTempRoot());
   const directory = await fs.mkdtemp(path.join(root, "gemini-browser-test-"));
+  await secureNewFixture(directory);
   const context = await chrome.newContext();
+  await context.addInitScript(bootstrapSendGuard);
   await context.route("**/*", (route) => route.fulfill({ status: 200, contentType: "text/html", body: fixtureHTML }));
   const page = await context.newPage();
-  await page.goto("https://gemini.google.com/app");
-  const config = geminiConfig({ GEMINI_WEB_DATA_DIR: directory });
+  // Retry/completion fixtures start in a bound conversation. Tests of root
+  // acknowledgement opt in explicitly; the app assigns its URL on first send.
+  await page.goto(url);
+  const config = geminiConfig({ GEMINI_WEB_DATA_DIR: directory, WEB_CHAT_DATA_DIR: path.join(directory, 'tasks') });
   const b = new GeminiBrowser(config, { connect: async () => context, disconnect: async () => {} });
+  const settle = b.settlePending.bind(b);
+  b.settlePending = async (expected, options) => {
+    try { return await settle(expected, options); }
+    catch (error) {
+      if (error.code === 'TASK_IDENTITY_CHANGED') {
+        const s = await b.snapshot();
+        t.diagnostic(JSON.stringify({ expected, pending: (await b.state()).pending,
+          observed: { url: s.url, userCount: s.userCount, responseCount: s.responseCount, lastUserHash: textHash(s.lastUser) } }));
+      }
+      throw error;
+    }
+  };
   t.after(async () => { await context.close(); assert.equal(path.dirname(directory), root); await fs.rm(directory, { recursive: true, force: true }); });
   return { b, page, directory };
 }
 
-test('unified tasks survive restart and reject legacy navigation until completion', async (t) => {
-  const { b, page, directory } = await fixture(t);
+for (const fromRoot of [false, true]) {
+test(`unified tasks survive restart and reject legacy navigation until completion (${fromRoot ? 'root to permanent' : 'existing conversation'})`, async (t) => {
+  const { b, page, directory } = await fixture(t, fromRoot ? { url: 'https://gemini.google.com/app' } : {});
   const kernel = new TaskKernel([geminiProvider(b)], { directory: path.join(directory, 'tasks') });
   const input = { provider: 'gemini', request_id: 'browser-restart', prompt: 'Unified\n  task' };
   const task = await kernel.send(input);
@@ -97,10 +119,25 @@ test('unified tasks survive restart and reject legacy navigation until completio
   const restarted = new TaskKernel([geminiProvider(new GeminiBrowser(b.config, b.runtime))], { directory: kernel.directory });
   await assert.rejects(restarted.run('gemini', () => b.newChat()), { code: 'TASK_ACTIVE' });
   assert.equal((await restarted.send(input)).task_id, task.task_id);
+  if (fromRoot) {
+    const pending = (await b.state()).pending;
+    const observed = await b.snapshot();
+    assert.equal(pending.originalURL, 'https://gemini.google.com/app');
+    assert.equal(pending.conversationURL, null);
+    assert.equal(observed.url, 'https://gemini.google.com/app/fixture');
+    assert.equal(observed.userCount, pending.userCount + 1);
+    assert.equal(textHash(observed.lastUser), pending.promptHash);
+  }
   const result = await restarted.result(task.task_id, { wait: true, timeoutMs: 10000 });
-  assert.equal(result.state, 'completed'); assert.equal(result.response.text, 'Fixture reply 1');
+  if (result.state !== 'completed') {
+    const s = await b.snapshot();
+    t.diagnostic(JSON.stringify({ pending: (await b.state()).pending,
+      observed: { url: s.url, userCount: s.userCount, responseCount: s.responseCount, lastUserHash: textHash(s.lastUser) } }));
+  }
+  assert.equal(result.state, 'completed', JSON.stringify(result)); assert.equal(result.response.text, 'Fixture reply 1');
   assert.equal(await page.evaluate(() => sendCount), 1); assert.equal((await b.state()).pending, null);
 });
+}
 
 test('unified cancellation stops only the verified browser generation', async (t) => {
   const { b, page, directory } = await fixture(t);
@@ -109,7 +146,7 @@ test('unified cancellation stops only the verified browser generation', async (t
   const task = await kernel.send({ provider: 'gemini', request_id: 'cancel', prompt: 'Cancellable' });
   await page.locator('[aria-label="Stop response"]').evaluate((e) => e.onclick = () => e.remove());
   const result = await kernel.read(task.task_id, { cancel: true });
-  assert.equal(result.state, 'cancelled'); assert.equal(result.response.complete, false);
+  assert.equal(result.state, 'cancelled', JSON.stringify(result)); assert.equal(result.response.complete, false);
   assert.equal((await b.state()).pending, null); assert.equal(await page.evaluate(() => sendCount), 1);
 });
 
@@ -170,11 +207,43 @@ test('retry preserves a user draft and refuses a missing retry control without c
   assert.equal((await b.snapshot()).draft,'Keep this draft');
 });
 
+test('public confirmed-only pending recovery binds a verified root send without resending', async t => {
+  const { b, page } = await fixture(t, { url: 'https://gemini.google.com/app' });
+  await b.sendMessage({ prompt: 'Root pending recovery', wait: false });
+  await page.locator('[aria-label="Copy response"]').waitFor();
+  assert.equal((await b.state()).pending.conversationURL, null);
+  assert.deepEqual(await b.resolvePending({ confirmed: true }), { resolved: true, resent: false });
+  assert.equal((await b.state()).pending, null);
+  assert.equal(await page.evaluate(() => window.sendCount), 1);
+});
+
+for (const changed of [false, true]) test(`public pending baseline recovery preserves draft and rejects changed prior user: ${changed}`, async t => {
+  const { b, page } = await fixture(t);
+  await page.evaluate(() => { const user = document.createElement('user-query'); user.innerHTML = '<div class="query-text"><p class="query-text-line">Original baseline</p></div>'; document.querySelector('#messages').append(user); });
+  await b.writePrompt('Never submitted');
+  await assert.rejects(b.submitPrompt({ wait: false, beforeSubmit: () => page.locator('[role="textbox"]').fill('Keep manual draft') }), { code: 'SEND_NOT_ATTEMPTED' });
+  const pending = (await b.state()).pending;
+  assert.equal(pending.baselineHash, textHash('Original baseline'));
+  if (changed) await page.locator('.query-text-line').evaluate(node => { node.textContent = 'Changed prior message'; });
+  if (changed) {
+    await assert.rejects(b.resolvePending({ confirmed: true }), { code: 'TASK_IDENTITY_CHANGED' });
+    assert.deepEqual((await b.state()).pending, pending);
+  } else {
+    assert.deepEqual(await b.resolvePending({ confirmed: true }), { resolved: true, resent: false });
+    assert.equal((await b.state()).pending, null);
+  }
+  assert.equal((await b.snapshot()).draft, 'Keep manual draft');
+  assert.equal(await page.evaluate(() => window.sendCount), 0);
+});
+
 test('a model change after retry preflight prevents the generation click', async t => {
   const { b, page } = await fixture(t);
   await b.sendMessage({prompt:'Question',wait:false});
   await page.locator('[aria-label="Copy response"]').waitFor();
-  await b.update({pending:null});
+  const observed = await b.snapshot();
+  await b.resolvePending({ confirmed: true, expected: {
+    url: observed.url, userCount: observed.userCount, promptHash: textHash('Question'),
+  } });
   await page.locator('model-response').evaluate(e=>{const button=document.createElement('button');button.setAttribute('aria-label','Redo');button.onclick=()=>{window.unexpectedRetry=true};e.append(button)});
   const click=await b.prepareRetry(await b.snapshot());
   await page.locator('[aria-label="Open mode picker"]').evaluate(e=>{e.textContent='Changed model'});
@@ -195,6 +264,28 @@ test('new named Gemini session waits for app mount and navigates only once', asy
   assert.equal(status.signedIn, true); assert.equal(loads, 1);
   assert.equal((await named.state()).sessionInitialized, true);
   assert.equal(await (await named.page()).evaluate(() => sendCount), 0);
+});
+
+test('pending resolution requires the original user turn even after manual confirmation', async t => {
+  const { b, page } = await fixture(t);
+  await b.sendMessage({ prompt: 'Original pending question', wait: false });
+  await page.locator('[aria-label="Copy response"]').waitFor();
+  const observed = await b.snapshot();
+  const expected = { url: observed.url, userCount: 1, promptHash: textHash('Original pending question') };
+  const pending = (await b.state()).pending;
+  assert.equal(observed.userCount, 1);
+  assert.equal(observed.lastUser, 'Original pending question');
+  await assert.rejects(b.resolvePending({ confirmed: true, expected: { ...expected, promptHash: textHash('Another question') } }),
+    { code: 'TASK_IDENTITY_CHANGED' });
+  assert.deepEqual((await b.state()).pending, pending);
+  await page.evaluate(() => {
+    const user = document.createElement('user-query');
+    user.innerHTML = '<div class="query-text"><p class="query-text-line">Later manual question</p></div>';
+    document.querySelector('#messages').append(user);
+  });
+  await assert.rejects(b.resolvePending({ confirmed: true, expected }), { code: 'TASK_IDENTITY_CHANGED' });
+  assert.deepEqual((await b.state()).pending, pending);
+  assert.equal(await page.evaluate(() => sendCount), 1);
 });
 
 test('loading timeout is distinct from logout and resumed initialization preserves a draft', async (t) => {
@@ -455,7 +546,7 @@ test('failure to open the picker is not reported as an unavailable thinking sett
 });
 
 test("browser sends once, waits for final text and can continue the conversation", async (t) => {
-  const { b, page } = await fixture(t);
+  const { b, page } = await fixture(t, { url: 'https://gemini.google.com/app' });
   const first = await b.runExclusive(() => b.sendMessage({ prompt: "Hello\n\n  indented line", timeoutMs: 10000 }));
   assert.equal(first.complete, true); assert.equal(first.text, "Fixture reply 1");
   const second = await b.runExclusive(() => b.sendMessage({ prompt: "Follow up", timeoutMs: 10000 }));
@@ -502,7 +593,7 @@ test("upload menu waits for a file chooser and never sends the attachment", asyn
         const input = document.createElement('input'); input.type = 'file'; input.hidden = true;
         input.onchange = () => {
           const preview = document.createElement('uploader-file-preview');
-          const label = document.createElement('span'); label.className = 'gem-attachment-text'; label.textContent = input.files[0].name.replace(/\.txt$/, ''); preview.append(label); document.body.append(preview);
+          const label = document.createElement('span'); label.className = 'gem-attachment-text'; label.textContent = input.files[0].name.replace(/\.txt$/, ''); preview.append(label); document.querySelector('input-area').append(preview);
           const tooltip = document.createElement('div'); tooltip.hidden = true; tooltip.setAttribute('role', 'tooltip'); tooltip.textContent = input.files[0].name; document.body.append(tooltip);
         };
         document.body.append(input); input.click();
@@ -607,8 +698,9 @@ test("dedicated browser persists across disconnects and explicit close terminate
   const root = path.resolve(browserTestTempRoot());
   const directory = await fs.mkdtemp(path.join(root, "gemini-runtime-test-"));
   await secureNewFixture(directory);
-  const config = { ...geminiConfig({ GEMINI_WEB_DATA_DIR: directory }), url: "about:blank", headless: true, executable: geminiConfig().executable || chromium.executablePath() };
+  const config = { ...geminiConfig({ GEMINI_WEB_DATA_DIR: directory, WEB_CHAT_DATA_DIR: path.join(directory, 'tasks') }), url: "about:blank", headless: true, executable: geminiConfig().executable || chromium.executablePath() };
   const runtime = new PersistentBrowser(config);
+  traceFixtureSecurity(runtime, t);
   t.after(async () => { await runtime.terminate(); assert.equal(path.dirname(directory), root); await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); });
   await runtime.connect(); const first = await readState(config.browserState);
   await runtime.disconnect(); assert.equal(processAlive(first.pid), true);

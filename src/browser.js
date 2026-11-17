@@ -1,4 +1,5 @@
 import { guardedSend, bootstrapSendGuard } from './shared/send-guard.js';
+import { verifyDataPaths } from './shared/data-security.js';
 import { answerTierControlDOM } from './shared/composer-controls.js';
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -121,6 +122,7 @@ export function readUserMessageDOMText(element) {
 // Renderer-side only: return at most one conservative reconstruction from the
 // same user node as the plain text. Never infer markup from ordinary text.
 export function readUserMessageIdentityDOM(element, selectors) {
+  const identity = (() => {
   const nodes = [...document.querySelectorAll(selectors)];
   const lastId = element.getAttribute('data-message-id') || element.closest('[data-chatgpt-search-message-ids]')?.getAttribute('data-chatgpt-search-message-ids')?.trim().split(/\s+/u)[0] || element.getAttribute('data-testid') || element.id || null;
   const rich = element.matches('.rich-text-user-turn') ? element : element.querySelector('.rich-text-user-turn');
@@ -184,6 +186,8 @@ export function readUserMessageIdentityDOM(element, selectors) {
   for (const code of codes) code.replaceWith(document.createTextNode('`' + code.textContent + '`'));
   const candidate = copies.map(p => p.textContent || '').join('\n\n');
   return {count:nodes.length, isLast:nodes.at(-1) === element, lastId, lastText:plain, identityCandidates:[candidate]};
+  })();
+  return { ...identity, lastHTML: element.outerHTML, url: location.href };
 }
 
 export function isProModel(value) {
@@ -676,10 +680,7 @@ async function readBrowserState() {
 }
 
 async function writeBrowserState(value) {
-  await fs.mkdir(path.dirname(BROWSER_STATE_FILE), { recursive: true });
-  await fs.writeFile(BROWSER_STATE_FILE, `${JSON.stringify(value, null, 2)}\n`, {
-    mode: 0o600,
-  });
+  await writeState(BROWSER_STATE_FILE, value);
 }
 
 async function readRawRuntimeState() {
@@ -695,6 +696,7 @@ async function readRuntimeState() {
 }
 
 export async function withRuntimeState(update, { signal } = {}) {
+  await verifyDataPaths({ runtimeState: RUNTIME_STATE_FILE });
   const release = await acquireLock(RUNTIME_LOCK_FILE, { signal, timeout: ACTION_TIMEOUT_MS, operation: 'runtime-state' });
   try {
     const raw = await readRawRuntimeState();
@@ -880,6 +882,7 @@ export function generationCompletionEvidence(runtime, { url, generating, respons
 }
 
 async function acquireOperationLock(operation, signal) {
+  await verifyDataPaths({ operationLock: OPERATION_LOCK_FILE });
   return acquireLock(OPERATION_LOCK_FILE, { signal, timeout: ACTION_TIMEOUT_MS, operation });
 }
 
@@ -962,11 +965,28 @@ export class ChatGPTBrowser {
     }
   }
 
-  async settleManagedGeneration({ allowIdle = false } = {}) {
-    const snapshot = await this.getLatestResponse({ includeTranscript: false });
+  async settleManagedGeneration(expected, { allowIdle = false } = {}) {
+    // Check before getLatestResponse, which can itself clear completed state.
+    const page = await this.page();
+    const identity = await page.evaluate(`(() => { const selectors = ${JSON.stringify(SELECTORS.userMessages.join(','))}; const nodes = [...document.querySelectorAll(selectors)]; const identity = nodes.length ? (${readUserMessageIdentityDOM.toString()})(nodes.at(-1), selectors) : { url: location.href, count: 0, isLast: true, lastText: '', identityCandidates: [] }; return { ...identity, responseCount: document.querySelectorAll(${JSON.stringify(SELECTORS.assistantMessages.join(','))}).length }; })()`);
+    if (!expected || !identity.isLast || identity.url !== expected.url || identity.count !== expected.userCount ||
+        !matchesUserPrompt(expected.baselineOnly ? expected.baselineHash : expected.promptHash, identity.lastText, expected.baselineOnly ? [] : identity.identityCandidates) ||
+        (expected.baselineOnly && identity.responseCount !== expected.responseCount)) {
+      throw new ChatGPTWebError('Original task identity changed; generation state was preserved.');
+    }
+    const snapshot = await this.getLatestResponse({ includeTranscript: false, includeIdentityCandidates: true });
+    const baseline = expected?.baselineOnly === true;
+    if (!expected || (snapshot.userMessageCount > 0 && snapshot.identitySnapshotValid === false) || snapshot.url !== expected.url ||
+        snapshot.userMessageCount !== expected.userCount ||
+        !matchesUserPrompt(baseline ? expected.baselineHash : expected.promptHash, snapshot.lastUserMessage || '', baseline ? [] : snapshot.identityCandidates) ||
+        (baseline && snapshot.assistantMessageCount !== expected.responseCount)) {
+      throw new ChatGPTWebError('Original task identity changed; generation state was preserved.');
+    }
     if (snapshot.generating) throw new ChatGPTWebError("回答仍在生成，不能解除任务状态。");
     if (snapshot.activeGeneration?.active) {
-      if (!allowIdle || snapshot.activeGeneration.url !== snapshot.url) throw new ChatGPTWebError('Original generation completion remains unverified.');
+      if (snapshot.activeGeneration.url !== snapshot.url || (!allowIdle && !generationCompletionEvidence({ activeGeneration: snapshot.activeGeneration }, {
+        url: snapshot.url, generating: snapshot.generating, responseCount: snapshot.assistantMessageCount, responseText: snapshot.response,
+      }))) throw new ChatGPTWebError('Original generation completion remains unverified.');
       await updateRuntimeState({ activeGeneration: null, lastGenerationInterruptedAt: Date.now() });
     }
   }
@@ -3694,6 +3714,8 @@ export class ChatGPTBrowser {
         url: page.url(),
         ownerPid: process.pid,
         assistantBefore,
+        userCount: userBefore + 1,
+        promptHash: textHash(promptText),
         baselineResponse: assistantBeforeText,
         status: wait ? "waiting" : "unobserved",
       },
@@ -3789,6 +3811,8 @@ export class ChatGPTBrowser {
             url: page.url(),
             ownerPid: null,
             assistantBefore,
+            userCount: userBefore + 1,
+            promptHash: textHash(promptText),
             baselineResponse: assistantBeforeText,
             status: "client-cancelled-generation-may-continue",
           },
@@ -4504,20 +4528,27 @@ export class ChatGPTBrowser {
       ? await lastAssistant.innerText().catch(() => "")
       : "";
     const streaming = await this.assistantIsStreaming(lastAssistant);
+    const snapshotURL = page.url();
+    const identitySnapshot = (includeIdentityCandidates || runtime.activeGeneration?.active) && renderedUserCount
+      ? await this.userMessageSnapshot({ includeIdentityCandidates: true }) : null;
+    const identityValid = Boolean(identitySnapshot && identitySnapshot.count === renderedUserCount && snapshotURL === page.url() && identitySnapshot.lastText);
     // A completed response can leave an empty assistant placeholder after
     // streaming finishes. Preserve the PR's node-count/change completion rule.
     const generationComplete = generationCompletionEvidence(runtime, {
       url: page.url(), generating: Boolean(stop || streaming), responseCount: renderedAssistantCount, responseText: lastAssistantText,
     });
     const ownerExited = generationIsStale(runtime);
-    if (generationComplete) {
+    const generationReleased = generationComplete && identityValid &&
+      runtime.activeGeneration.userCount === identitySnapshot.count &&
+      matchesUserPrompt(runtime.activeGeneration.promptHash, identitySnapshot.lastText, identitySnapshot.identityCandidates);
+    if (generationReleased) {
       await updateRuntimeState({
         activeGeneration: null,
         lastGenerationCompletedAt: Date.now(),
       });
     }
     const generationUnconfirmed =
-      runtime.activeGeneration?.active && !generationComplete;
+      runtime.activeGeneration?.active && !generationReleased;
     let settings = this.cachedSettings();
     let settingsWarning = null;
     if (includeSettings && !runtime.circuitBreaker?.active && !generationUnconfirmed) {
@@ -4533,9 +4564,6 @@ export class ChatGPTBrowser {
       : null;
     const userCount = transcript?.userMessageCount ?? renderedUserCount;
     const assistantCount = transcript?.assistantMessageCount ?? renderedAssistantCount;
-    const snapshotURL = page.url();
-    const identitySnapshot = includeIdentityCandidates && !transcript && renderedUserCount ? await this.userMessageSnapshot({ includeIdentityCandidates: true }) : null;
-    const identityValid = Boolean(identitySnapshot && identitySnapshot.count === renderedUserCount && snapshotURL === page.url() && identitySnapshot.lastText);
     const latestUserText = transcript
       ? transcript.messages.findLast((message) => message.author === "user")?.text.trim() || null
       : renderedUserCount
@@ -4564,7 +4592,7 @@ export class ChatGPTBrowser {
       assistantMessageCount: assistantCount,
       generating: Boolean(stop || streaming),
       activeGeneration:
-        generationComplete ? null : runtime.activeGeneration || null,
+        generationReleased ? null : runtime.activeGeneration || null,
       generationOwnerExited: ownerExited,
       rateLimited: rateLimit.limited,
       rateLimitScope: rateLimit.scope,

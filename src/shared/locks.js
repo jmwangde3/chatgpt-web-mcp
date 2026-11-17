@@ -27,8 +27,8 @@ export async function readLockSnapshot(file, { inspect = inspectProcessIdentity,
 }
 
 // Age and missed heartbeats are diagnostics, never reclamation authority.
-export async function acquireLock(file, { signal, timeout = 20000, operation = 'operation', heartbeatMs = 10000, inspect = inspectProcessIdentity, processStartIdentity } = {}) {
-  await fs.mkdir(path.dirname(file), { recursive: true });
+export async function acquireLock(file, { signal, timeout = 20000, operation = 'operation', heartbeatMs = 10000, inspect = inspectProcessIdentity, processStartIdentity, onPhase } = {}) {
+  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   signal?.throwIfAborted();
   const identity = processStartIdentity === undefined ? await ownProcessIdentity() : processStartIdentity;
   const deadline = Date.now() + timeout;
@@ -37,9 +37,18 @@ export async function acquireLock(file, { signal, timeout = 20000, operation = '
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
     let handle;
+    const temp = `${file}.${randomUUID()}.tmp`;
     try {
-      handle = await fs.open(file, 'wx', 0o600);
+      // Publish a complete, flushed inode with an exclusive hard link. A crash
+      // before publication can leave only an unreferenced temp, never an empty
+      // canonical lock. NTFS and POSIX both provide atomic link-if-absent.
+      handle = await fs.open(temp, 'wx', 0o600);
       await handle.writeFile(JSON.stringify({ pid: process.pid, token, operation: operationName(operation), startedAt: Date.now(), processStartIdentity: identity }));
+      await handle.sync();
+      await onPhase?.('prepared', file);
+      await fs.link(temp, file);
+      await fs.unlink(temp).catch(() => {});
+      await onPhase?.('published', file);
       let stopped = false, heartbeat = Promise.resolve();
       const timer = setInterval(() => {
         if (!stopped) heartbeat = heartbeat.then(() => handle.utimes(new Date(), new Date())).catch(() => {});
@@ -47,21 +56,25 @@ export async function acquireLock(file, { signal, timeout = 20000, operation = '
       timer.unref?.();
       return async () => {
         if (stopped) return;
-        stopped = true; clearInterval(timer); await heartbeat; await handle.close();
+        stopped = true; clearInterval(timer); await heartbeat; await onPhase?.('releasing', file); await handle.close();
         const current = await readOwner();
         if (current?.token === token) await fs.unlink(file).catch(e => { if (e.code !== 'ENOENT') throw e; });
       };
     } catch (error) {
       await handle?.close().catch(() => {});
+      await fs.unlink(temp).catch(() => {});
       if (error.code !== 'EEXIST') throw error;
       const owner = await readOwner();
       const state = await lockOwnerState(owner, inspect);
       if (state === 'DEAD' || state === 'PID_REUSED') {
-        let reclaim;
-        const reclaimToken = randomUUID();
+        let releaseReclaim;
         try {
-          reclaim = await fs.open(file + '.reclaim', 'wx', 0o600);
-          await reclaim.writeFile(JSON.stringify({ pid: process.pid, token: reclaimToken }));
+          // Reclamation is itself the same crash-recoverable lock protocol.
+          // A dead reclaimer is recovered under its own reclaim mutex; no
+          // contender ever unlinks a live/unknown mutex or guesses by age.
+          releaseReclaim = await acquireLock(file + '.reclaim', { signal,
+            timeout: Math.max(1, Math.min(200, deadline - Date.now())), operation: 'lock-reclaim', heartbeatMs,
+            inspect, processStartIdentity: identity, onPhase });
           const current = await readOwner();
           if (current?.token === owner.token && current.pid === owner.pid && current.processStartIdentity === owner.processStartIdentity) {
             const confirmed = await lockOwnerState(current, inspect);
@@ -70,14 +83,9 @@ export async function acquireLock(file, { signal, timeout = 20000, operation = '
               if (last?.token === current.token && last.pid === current.pid && last.processStartIdentity === current.processStartIdentity) await fs.unlink(file);
             }
           }
-        } catch (e) { if (!['EEXIST', 'ENOENT'].includes(e.code)) throw e; }
+        } catch (e) { if (!['BUSY', 'ENOENT'].includes(e.code)) throw e; }
         finally {
-          if (reclaim) {
-            await reclaim.close();
-            let marker;
-            try { marker = JSON.parse(await fs.readFile(file + '.reclaim', 'utf8')); } catch {}
-            if (marker?.token === reclaimToken) await fs.unlink(file + '.reclaim').catch(e => { if (e.code !== 'ENOENT') throw e; });
-          }
+          await releaseReclaim?.();
         }
       }
       await delay(Math.min(50, Math.max(1, deadline - Date.now())), undefined, { signal });

@@ -11,24 +11,39 @@ import { controlRequest } from './control.js';
 import { browserDiagnostics, safeControlDiagnostics } from './browser-diagnostics.js';
 import { acquireLock, readLockSnapshot } from './locks.js';
 import { inspectProcessIdentity } from './process-identity.js';
+import { verifyDataPaths } from './data-security.js';
 export { acquireLock } from './locks.js';
 
 export class WebUIError extends Error {
   constructor(code, message) { super(message); this.name = "WebUIError"; this.code = code; }
 }
 
-export async function readState(file) {
+export async function readState(file, missingValue = {}) {
   try { return JSON.parse(await fs.readFile(file, "utf8")); }
-  catch (error) { if (error.code === "ENOENT") return {}; throw error; }
+  catch (error) { if (error.code === "ENOENT") return missingValue; throw error; }
 }
 
-export async function writeState(file, value) {
-  await fs.mkdir(path.dirname(file), { recursive: true });
+export async function writeState(file, value, { fsImpl = fs, delayImpl = delay } = {}) {
+  await fsImpl.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const temp = `${file}.${randomUUID()}.tmp`;
+  let handle;
   try {
-    await fs.writeFile(temp, JSON.stringify(value, null, 2) + "\n", { mode: 0o600, flag: "wx" });
-    await fs.rename(temp, file);
-  } finally { await fs.unlink(temp).catch(() => {}); }
+    handle = await fsImpl.open(temp, 'wx', 0o600);
+    await handle.writeFile(JSON.stringify(value, null, 2) + "\n");
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    for (let attempt = 0; ; attempt++) {
+      try { await fsImpl.rename(temp, file); break; }
+      catch (error) {
+        if (!['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 4) throw error;
+        await delayImpl(10 * 2 ** attempt);
+      }
+    }
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+    await fsImpl.unlink(temp).catch(() => {});
+  }
 }
 
 export function processAlive(pid) {
@@ -61,7 +76,11 @@ export async function browserEndpoint(port, { signal, timeout = 1000, fetchImpl 
 // Provider-neutral persistent Chrome runtime. Connecting and disconnecting does
 // not terminate Chrome; only explicit terminate() sends Browser.close.
 export class PersistentBrowser {
-  constructor(config, { connect = chromium.connectOverCDP.bind(chromium), fetchImpl = fetch, spawnImpl = spawn, inspectPID = inspectProcessIdentity, security = process.platform === "win32" ? { paths: verifyWindowsPaths, process: verifyWindowsProcess, inspect: inspectWindowsBrowserProcess } : process.platform === 'linux' ? { paths: async () => {}, process: verifyLinuxBrowserProcess, inspect: inspectLinuxBrowserProcess } : null } = {}) {
+  constructor(config, { connect = chromium.connectOverCDP.bind(chromium), fetchImpl = fetch, spawnImpl = spawn, inspectPID = inspectProcessIdentity, stateIO = {}, security = process.platform === "win32" ? { paths: verifyDataPaths, process: verifyWindowsProcess, inspect: inspectWindowsBrowserProcess } : process.platform === 'linux' ? { paths: verifyDataPaths, process: verifyLinuxBrowserProcess, inspect: inspectLinuxBrowserProcess } : null } = {}) {
+    this.stateIO = { read: readState, write: writeState, unlink: file => fs.unlink(file), ...stateIO };
+    this.launchIntent = `${config.browserState}.launch-intent.json`;
+    this.launchChild = null;
+    this.pendingLaunch = null;
     this.security = security;
     this.inspectPID = inspectPID;
     this.config = config; this.browser = null; this.context = null;
@@ -108,13 +127,27 @@ export class PersistentBrowser {
     if (this.attaching || this.disconnecting) throw new WebUIError('CONTROL_BUSY', 'The previous control connection is still closing; retry reading the same task later.');
     const config = this.config;
     this.launched = false;
-    if (this.security) await this.security.paths(config);
-    let prior = await readState(config.browserState);
+    if (this.security) await this.security.paths({ ...config, protectedFiles: [...(config.protectedFiles || []), this.launchIntent] });
+    const io = this.stateIO;
+    let prior = await io.read(config.browserState);
+    const missingIntent = Symbol('missing launch intent');
+    const intent = await io.read(this.launchIntent, missingIntent);
+    const recovering = intent !== missingIntent;
+    if (recovering) {
+      if (!intent || !Number.isInteger(intent.pid) || intent.pid < 1 || !Number.isInteger(intent.port) || intent.port < 1 || intent.port > 65535 || intent.profile !== config.profile || intent.executable !== config.executable || !intent.launchId) {
+        throw new WebUIError('BROWSER_LAUNCH_UNCERTAIN', 'A launch intent cannot be safely recovered. Preserve Chrome and inspect manually; no second browser was launched.');
+      }
+      prior = intent;
+    }
     let priorMissing = false;
     if (prior.pid && this.security?.inspect) {
       const inspection = await this.security.inspect({ ...prior, executable: config.executable, profile: config.profile });
       if (inspection.state === 'PROCESS_MATCHED_NO_CDP') throw new WebUIError('BROWSER_NO_CDP', 'The verified dedicated process has no debugging listener. Preserve it and inspect manually; no second browser was launched.');
-      if (['UNKNOWN','IDENTITY_MISMATCH'].includes(inspection.state)) throw new WebUIError('BROWSER_IDENTITY_MISMATCH', 'Dedicated process identity is unknown or mismatched. No process was started or terminated.');
+      if (['UNKNOWN','IDENTITY_MISMATCH'].includes(inspection.state)) {
+        const error = new WebUIError('BROWSER_IDENTITY_MISMATCH', 'Dedicated process identity is unknown or mismatched. No process was started or terminated.');
+        error.safeDiagnostics = safeControlDiagnostics({ process_identity_reason: inspection.reason });
+        throw error;
+      }
       if (inspection.state === 'NOT_RUNNING') {
         if (await browserEndpoint(prior.port, { signal, fetchImpl: this.fetchImpl })) throw new WebUIError('BROWSER_IDENTITY_MISMATCH', 'The recorded PID is absent but its port is still reachable. State was preserved.');
         priorMissing = true;
@@ -122,15 +155,23 @@ export class PersistentBrowser {
     }
     if (this.security && prior.pid && !priorMissing) {
       const identity = await this.security.process({ ...prior, executable: config.executable, profile: config.profile });
-      if (prior.creationTime !== identity.creationTime || prior.processStartIdentity !== identity.processStartIdentity || prior.pid !== identity.pid) { prior = { ...prior, ...identity }; await writeState(config.browserState, prior); }
+      if (prior.creationTime !== identity.creationTime || prior.processStartIdentity !== identity.processStartIdentity || prior.pid !== identity.pid) { prior = { ...prior, ...identity }; await io.write(config.browserState, prior); }
     }
     const probe = port => browserEndpoint(port, { signal, fetchImpl: this.fetchImpl });
     let target = prior.profile === config.profile && processAlive(prior.pid) ? await probe(prior.port) : null;
+    if (recovering) {
+      if (!target) throw new WebUIError('BROWSER_LAUNCH_UNCERTAIN', 'The recorded launch cannot be reached. Preserve it and inspect manually; no second browser was launched.');
+      await io.write(config.browserState, prior);
+      this.launchChild?.unref();
+      this.launchChild = null;
+      this.pendingLaunch = null;
+      await io.unlink(this.launchIntent);
+    }
     if (!target) {
       if (prior.pid && processAlive(prior.pid)) throw new WebUIError("BROWSER_UNREACHABLE", "The dedicated browser is running but unreachable; inspect it before restarting.");
       if (prior.pid) void this.diagnostic('saved_process_missing', { pid: prior.pid });
       if (!config.executable) throw new WebUIError("NO_BROWSER", "Install Chrome/Edge or configure the provider browser executable.");
-      await fs.mkdir(config.profile, { recursive: true });
+      await fs.mkdir(config.profile, { recursive: true, mode: 0o700 });
       const port = await freePort();
       const args = [
         `--user-data-dir=${config.profile}`, "--profile-directory=Default",
@@ -139,13 +180,26 @@ export class PersistentBrowser {
         ...(config.launchArgs || []), ...(config.headless ? ["--headless=new"] : []), config.url,
       ];
       signal?.throwIfAborted();
+      // Keep an independent record across the spawn/publication gap. An intent
+      // without a PID is deliberately never interpreted as permission to retry.
+      const launch = { launchId: randomUUID(), port, profile: config.profile, executable: config.executable, startedAt: Date.now() };
+      await io.write(this.launchIntent, launch);
+      signal?.throwIfAborted();
       const child = this.spawnImpl(config.executable, args, { detached: true, stdio: "ignore", windowsHide: true });
+      this.launchChild = child;
       let launchError;
       child.on("error", (error) => { launchError = error; void this.diagnostic('process_error', { errorName: error.name }); });
       child.on('exit', (exitCode, exitSignal) => { void this.diagnostic('process_exit', { pid: child.pid, exitCode, signal: exitSignal }); });
-      child.unref();
       this.launched = true;
-      await writeState(config.browserState, { pid: child.pid, port, profile: config.profile, startedAt: Date.now() });
+      launch.pid = child.pid;
+      this.pendingLaunch = launch;
+      await io.write(this.launchIntent, launch);
+      if (!Number.isInteger(child.pid) || child.pid < 1) throw new WebUIError('BROWSER_LAUNCH_UNCERTAIN', 'The spawned browser has no confirmed PID. Preserve the launch intent and inspect manually.');
+      await io.write(config.browserState, launch);
+      child.unref();
+      this.launchChild = null;
+      this.pendingLaunch = null;
+      await io.unlink(this.launchIntent);
       void this.diagnostic('process_started', { pid: child.pid });
       const deadline = Date.now() + config.actionTimeout;
       while (Date.now() < deadline && !(target = await probe(port))) {
@@ -157,9 +211,9 @@ export class PersistentBrowser {
     }
     this.endpointReachable = Boolean(target);
     if (this.security) {
-      const state = await readState(config.browserState);
+      const state = await io.read(config.browserState);
       const identity = await this.security.process({ ...state, executable: config.executable, profile: config.profile });
-      if (state.creationTime !== identity.creationTime || state.processStartIdentity !== identity.processStartIdentity || state.pid !== identity.pid) await writeState(config.browserState, { ...state, ...identity });
+      if (state.creationTime !== identity.creationTime || state.processStartIdentity !== identity.processStartIdentity || state.pid !== identity.pid) await io.write(config.browserState, { ...state, ...identity });
     }
     signal?.throwIfAborted();
     const started = Date.now();

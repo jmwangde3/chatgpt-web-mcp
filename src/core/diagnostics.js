@@ -1,4 +1,5 @@
-import { verifyWindowsPaths, inspectWindowsBrowserProcess } from '../shared/windows-security.js';
+import { inspectWindowsBrowserProcess } from '../shared/windows-security.js';
+import { verifyDataPaths } from '../shared/data-security.js';
 import { inspectLinuxBrowserProcess } from '../shared/native-browser-identity.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -35,8 +36,8 @@ export async function diagnose(kernel, ids = [...kernel.providers.keys()]) {
       const browser = await localState(config.browserState);
       check('browser_process', 'info', processAlive(browser.pid) ? 'RUNNING_UNVERIFIED' : 'NOT_RUNNING', 'Local PID check only; sign-in and browser connectivity are not verified.');
     } catch { check('browser_process', 'fail', 'UNREADABLE_STATE', 'Inspect local browser state privately.'); }
-    if (process.platform === 'win32' && config?.profile) {
-      try { await verifyWindowsPaths(config, { allowCreate: false }); check('profile_security', 'pass', 'VERIFIED', 'none'); }
+    if (['win32', 'linux', 'darwin'].includes(process.platform) && config?.profile) {
+      try { await verifyDataPaths(config, { allowCreate: false }); check('profile_security', 'pass', 'VERIFIED', 'none'); }
       catch (error) { check('profile_security', error.code === 'PROFILE_MISSING' ? 'warn' : 'fail', ['PROFILE_MISSING','PROFILE_REPARSE_POINT','PROFILE_IN_REPOSITORY','PROFILE_ACL_UNSAFE','PROFILE_NOT_DIRECTORY','PROFILE_NOT_FILE','SECURITY_QUERY_TIMEOUT'].includes(error.code) ? error.code : 'PROFILE_SECURITY_UNVERIFIED', 'Inspect locally; existing permissions and data were preserved.'); }
     }
     try {
@@ -69,6 +70,15 @@ export async function diagnose(kernel, ids = [...kernel.providers.keys()]) {
       const active = Object.values(journal.tasks).filter(t => !['completed', 'cancelled', 'failed', 'abandoned'].includes(t.state));
       checks.push({ name: 'task_journal', status: active.length ? 'warn' : 'pass', code: active.length ? 'TASK_ACTIVE' : 'READABLE', counts, ...statistics, active_state: journal.active ? journal.tasks[journal.active].state : null, action: active.length ? 'Use chat_tasks, then chat_result for existing tasks. Independent work may use a new session_id; do not resend uncertain work.' : 'none' });
     } catch { check('task_journal', 'fail', 'INVALID_JOURNAL', 'Inspect and restore the local journal privately; preserve duplicate-request records.'); }
+    if (kernel.verifyStorage) {
+      const file = path.join(kernel.directory, id, 'tasks.json');
+      try {
+        if (await fs.lstat(path.dirname(file)).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; })) {
+          await kernel.verifyStorage(file, false);
+          check('task_storage_security', 'pass', 'VERIFIED', 'none');
+        } else check('task_storage_security', 'warn', 'NOT_INITIALIZED', 'No task storage exists yet.');
+      } catch { check('task_storage_security', 'fail', 'TASK_STORAGE_UNSAFE', 'Inspect task directory and file permissions locally; preserve existing data.'); }
+    }
     const controllers = [];
     for (const item of [adapter, ...[...(kernel.sessions?.values() || [])].filter(p => p.id === id)]) {
       if (item.browser?.controllerDiagnostics) controllers.push(await item.browser.controllerDiagnostics());

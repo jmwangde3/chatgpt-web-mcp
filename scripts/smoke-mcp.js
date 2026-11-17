@@ -40,6 +40,12 @@ try {
   assert.ok(!doctor.isError);
   assert.equal(JSON.parse(doctor.content[0].text).scope, 'local_only');
   if (!unified) {
+  for (const name of ['chatgpt_upload_files', 'chatgpt_send_message', 'chatgpt_route_new_chat']) {
+    assert.equal(tools.tools.find(tool => tool.name === name).inputSchema.properties.files.maxItems, 10);
+    const rejected = await client.callTool({ name, arguments: { prompt: 'unused', files: Array.from({ length: 11 }, (_, i) => `C:/unused/file-${i}.txt`) } });
+    assert.equal(rejected.isError, true, `${name} must reject eleven files`);
+    assert.match(rejected.content[0].text, /10/);
+  }
   for (const name of ["chatgpt_send_message", "chatgpt_status", "gemini_send_message", "gemini_get_latest_response", "gemini_status", "gemini_circuit_breaker_status"]) {
     assert.ok(tools.tools.some((tool) => tool.name === name), `Missing tool: ${name}`);
   }

@@ -11,7 +11,24 @@ export function bootstrapSendGuard() {
   const check = event => {
     // Block any attempted send while this one-shot capability is armed.
     if (!state.active) return;
-    const { composer, button, expectedText, expectedURL, allowedOrigin } = state.active;
+    if (state.active.kind === 'stop') {
+      const { button, user, users, stops, snapshot } = state.active;
+      if (!event.composedPath().includes(button)) return;
+      let valid = false;
+      try {
+        const nodes = [...doc.querySelectorAll(users)];
+        const controls = [...doc.querySelectorAll(stops)].filter(visible);
+        valid = state.outcome === 'armed' && event.isTrusted && location.href === snapshot.url &&
+          nodes.length === snapshot.count && nodes.at(-1) === user && user.ownerDocument === doc &&
+          user.isConnected && user.outerHTML === snapshot.lastHTML && controls.length === 1 && controls[0] === button &&
+          button.ownerDocument === doc && visible(button) && !button.disabled && button.getAttribute('aria-disabled') !== 'true';
+      } catch { valid = false; }
+      state.outcome = valid ? 'allowed' : 'rejected';
+      if (valid) state.attempted = true;
+      if (!valid) { event.preventDefault(); event.stopImmediatePropagation(); }
+      return;
+    }
+    const { composer, button, expectedText, expectedURL, allowedOrigin, gemini, binding } = state.active;
     const target = event.composedPath();
     if (!target.includes(button)) return;
     let valid = false;
@@ -24,9 +41,23 @@ export function bootstrapSendGuard() {
         !composer.disabled && !composer.readOnly &&
         (composer.isContentEditable || composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) &&
         text(composer) === expectedText &&
-        Boolean(composer.closest('form')) && button.closest('form') === composer.closest('form') &&
+        (gemini ? location.origin === 'https://gemini.google.com' && binding?.valid &&
+          binding.region.isConnected && composer.closest(gemini.region) === binding.region &&
+          button.closest(gemini.region) === binding.region &&
+          binding.region.querySelectorAll(gemini.composer).length === 1 &&
+          binding.region.querySelectorAll(gemini.send).length === 1 &&
+          // Nested layout ancestors are not independent composers. Count the
+          // actual editors, while keeping both nodes pinned to their closest region.
+          [...doc.querySelectorAll(gemini.composer)].filter(node => !node.closest('user-query, model-response')).length === 1 &&
+          [...doc.querySelectorAll(gemini.user)].filter(visible).length === gemini.userCount &&
+          ![...doc.querySelectorAll(gemini.stop)].some(visible) &&
+          (() => {
+            const nodes = [...doc.querySelectorAll(gemini.attachments)].filter(e => visible(e) && !e.closest('user-query, model-response') && !e.parentElement?.closest(gemini.attachments));
+            return nodes.length === binding.attachments.length && nodes.every((node, i) =>
+              node === binding.attachments[i].node && node.outerHTML === binding.attachments[i].html);
+          })() : Boolean(composer.closest('form')) && button.closest('form') === composer.closest('form')) &&
         !doc.querySelector('[role="progressbar"], [data-state="uploading"], [data-testid*="upload-progress"]') &&
-        ![...doc.querySelectorAll('[aria-busy="true"]')].some(node => visible(node) || composer.closest('form')?.contains(node));
+        ![...doc.querySelectorAll('[aria-busy="true"]')].some(node => visible(node) || (gemini ? binding?.region : composer.closest('form'))?.contains(node));
     } catch { valid = false; }
     state.outcome = valid ? 'allowed' : state.attempted ? 'uncertain' : 'rejected';
     if (valid) state.attempted = true;
@@ -40,12 +71,20 @@ export function bootstrapSendGuard() {
 export function installSendGuard(input) {
   const state = window.__webChatSendGate;
   if (!state || state.active) return false;
+  if (input.gemini) {
+    const g = input.gemini;
+    const region = input.composer.closest(g.region);
+    const nodes = [...document.querySelectorAll(g.attachments)].filter(e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && !e.closest('user-query, model-response') && !e.parentElement?.closest(g.attachments));
+    input.binding = { region, valid: !!region && input.button.closest(g.region) === region &&
+      JSON.stringify(nodes.map(e => e.innerText)) === JSON.stringify(g.expectedAttachments),
+      attachments: nodes.map(node => ({node, html: node.outerHTML})) };
+  }
   state.active = input; state.outcome = 'armed'; state.attempted = false;
   window[input.key] = state;
   return true;
 }
 
-export async function guardedSend({ page, composer, button, expectedText, expectedURL, allowedOrigin, click }) {
+export async function guardedSend({ page, composer, button, expectedText, expectedURL, allowedOrigin, click, gemini }) {
   const key = `__web_chat_send_${globalThis.crypto.randomUUID().replaceAll('-', '')}`;
   // Handle references pin the exact nodes, never resolve a second selector.
   const composerHandle = await composer.elementHandle();
@@ -55,7 +94,7 @@ export async function guardedSend({ page, composer, button, expectedText, expect
   }
   let inspector;
   try {
-    const installed = await page.evaluate(installSendGuard, { composer: composerHandle, button: buttonHandle, expectedText, expectedURL, allowedOrigin, key });
+    const installed = await page.evaluate(installSendGuard, { composer: composerHandle, button: buttonHandle, expectedText, expectedURL, allowedOrigin, key, gemini });
     if (!installed) throw Object.assign(new Error('Early send guard is unavailable; refresh the bound conversation before preparing the draft.'), {code:'SEND_NOT_ATTEMPTED',sendOutcome:'not_attempted'});
     // A capture listener registered on window earlier could already send before
     // our rejection. CDP must prove ours is the first window click-capture handler.

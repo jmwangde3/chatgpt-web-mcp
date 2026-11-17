@@ -1,4 +1,17 @@
-import { windowsQuery } from '../src/shared/windows-security.js';
+import { windowsQuery, verifyWindowsPaths } from '../src/shared/windows-security.js';
+
+// Keep failure diagnostics useful without printing user paths or raw errors.
+export function traceFixtureSecurity(runtime, t) {
+  if (process.platform !== 'win32') return;
+  runtime.security.paths = config => verifyWindowsPaths(config, { query: async (script, evidence, options) => {
+    const result = await windowsQuery('try {\n' + script + '\n} catch { @{fixtureQueryFailure=@{category=$_.CategoryInfo.Category.ToString();type=$_.Exception.GetType().Name;hresult=$_.Exception.HResult}}|ConvertTo-Json -Depth 3 -Compress }', evidence, options);
+    if (result.fixtureQueryFailure) {
+      t.diagnostic(JSON.stringify(result.fixtureQueryFailure));
+      throw Object.assign(new Error('Fixture security query failed; see safe category diagnostics.'), { code: 'SECURITY_QUERY_FAILED' });
+    }
+    return result;
+  } });
+}
 
 // Only initialize a test-owned, freshly created empty root, never a real profile.
 export async function secureNewFixture(directory) {

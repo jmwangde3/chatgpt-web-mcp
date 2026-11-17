@@ -11,6 +11,7 @@ export function safeControlDiagnostics(value = {}) {
   if (typeof value.endpoint_reachable === 'boolean') out.endpoint_reachable = value.endpoint_reachable;
   if (['DISCONNECTED','CONNECTING','CONNECTED','ATTACH_TIMEOUT_PENDING','DISCONNECTING','CONTROLLER_POISONED'].includes(value.controller_state)) out.controller_state = value.controller_state;
   if (typeof value.restart_mcp_required === 'boolean') out.restart_mcp_required = value.restart_mcp_required;
+  if (['PROCESS_EXITED','PROCESS_IDENTITY_UNAVAILABLE','PROCESS_START_CHANGED','UNSUPPORTED_LAUNCHER','EXECUTABLE_MISMATCH','ARGUMENT_MISMATCH','PROCESS_CHANGED_DURING_CHECK','IDENTITY_READ_FAILED','OWNED_LOOPBACK_LISTENER_MISSING','INVALID_EXPECTATION','LAUNCHER_CHANGED','FD_LIMIT_EXCEEDED'].includes(value.process_identity_reason)) out.process_identity_reason = value.process_identity_reason;
   for (const key of ['operation_lock_owner', 'task_lock_owner']) {
     const owner = value[key];
     if (!owner || typeof owner !== 'object') continue;

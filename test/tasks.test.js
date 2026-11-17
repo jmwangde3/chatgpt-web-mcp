@@ -22,7 +22,7 @@ async function fixture(t, id = 'gemini') {
     inspect: async () => ({ ...page }), settle: async () => {},
     cancel: async () => { cancels++; page.busy = false; },
   };
-  const kernel = new TaskKernel([adapter], { directory });
+  const kernel = new TaskKernel([adapter], { directory, verifyStoragePaths: async () => {} });
   const input = { provider: id, request_id: 'one', prompt: 'synthetic private prompt' };
   return { kernel, adapter, page, input, directory, journal: path.join(directory, id, 'tasks.json'), sends: () => sends, cancels: () => cancels };
 }
@@ -163,7 +163,7 @@ for (const id of ['chatgpt', 'gemini']) {
   test(`${id}: replay survives restart, rejects content conflicts and stores no prompt text`, async (t) => {
     const f = await fixture(t, id);
     const first = await f.kernel.send(f.input);
-    const restarted = new TaskKernel([f.adapter], { directory: f.directory });
+    const restarted = new TaskKernel([f.adapter], { directory: f.directory, verifyStoragePaths: async () => {} });
     const replay = await restarted.send(f.input);
     assert.equal(replay.task_id, first.task_id); assert.equal(replay.replayed, true); assert.equal(f.sends(), 1);
     await assert.rejects(restarted.send({ ...f.input, prompt: 'changed' }), { code: 'IDEMPOTENCY_CONFLICT' });
@@ -322,7 +322,7 @@ test('retry replaces the completed response once, including concurrent calls and
   await f.kernel.result(original.task_id);
   let clicks = 0;
   f.adapter.prepareRetry = async () => async () => { clicks++; f.page.busy = true; f.page.complete = false; return { started: true }; };
-  const next = new TaskKernel([f.adapter], { directory: f.directory });
+  const next = new TaskKernel([f.adapter], { directory: f.directory, verifyStoragePaths: async () => {} });
   const results = await Promise.all([f.kernel.retry(original.task_id), next.retry(original.task_id)]);
   assert.equal(clicks, 1); assert.equal(results.filter(r => r.replayed).length, 1);
   assert.equal((await next.result(original.task_id)).state, 'running');
@@ -402,13 +402,13 @@ test('crash before send is released; damaged journals fail closed', async (t) =>
   await assert.rejects(f.kernel.send({ ...f.input, request_id: 'two' }), { code: 'INVALID_JOURNAL' });
 });
 test('concurrent replay through independent kernels sends only once', async (t) => {
-  const f = await fixture(t); const other = new TaskKernel([f.adapter], { directory: f.directory });
+  const f = await fixture(t); const other = new TaskKernel([f.adapter], { directory: f.directory, verifyStoragePaths: async () => {} });
   const tasks = await Promise.all([f.kernel.send(f.input), other.send(f.input)]);
   assert.equal(tasks[0].task_id, tasks[1].task_id); assert.equal(f.sends(), 1);
 });
 test('different providers operate independently', async (t) => {
   const f = await fixture(t); const other = { ...f.adapter, id: 'chatgpt' };
-  const kernel = new TaskKernel([f.adapter, other], { directory: f.directory });
+  const kernel = new TaskKernel([f.adapter, other], { directory: f.directory, verifyStoragePaths: async () => {} });
   await kernel.send(f.input);
   assert.equal(await kernel.run('chatgpt', () => 'available'), 'available');
 });

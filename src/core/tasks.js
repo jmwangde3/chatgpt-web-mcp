@@ -8,6 +8,7 @@ import { safeControlDiagnostics } from '../shared/browser-diagnostics.js';
 import { recoveryFor } from './recovery.js';
 import { validateSessionId } from '../shared/sessions.js';
 import { textHash, matchesUserPrompt } from '../shared/user-message-identity.js';
+import { verifyDataPaths } from '../shared/data-security.js';
 
 export { textHash };
 const fingerprint = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -71,10 +72,11 @@ export function journalStatistics(journal, { now = Date.now() } = {}) {
 // Journal and brief UI operations are serialized per provider. Generation and
 // task occupancy are isolated by session; result waits release the lock.
 export class TaskKernel {
-  constructor(providers, { directory = process.env.WEB_CHAT_DATA_DIR || path.join(os.homedir(), '.web-chat-mcp') } = {}) {
+  constructor(providers, { directory = process.env.WEB_CHAT_DATA_DIR || path.join(os.homedir(), '.web-chat-mcp'), verifyStoragePaths = verifyDataPaths } = {}) {
     this.providers = new Map(providers.map((provider) => [provider.id, provider]));
     this.directory = path.resolve(directory);
     this.sessions = new Map();
+    this.verifyStoragePaths = verifyStoragePaths;
   }
   adapter(id, sessionId) {
     const provider = this.provider(id);
@@ -96,11 +98,17 @@ export class TaskKernel {
   }
   async readSnapshot(id) {
     this.provider(id);
-    return validateJournal(await readState(path.join(this.directory, id, 'tasks.json')), id);
+    const file = path.join(this.directory, id, 'tasks.json');
+    if (await fs.lstat(path.dirname(file)).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; })) await this.verifyStorage(file, false);
+    return validateJournal(await readState(file), id);
+  }
+  async verifyStorage(file, allowCreate = true) {
+    await this.verifyStoragePaths({ dataDirectories: [path.dirname(file)], protectedFiles: [file, file + '.lock', file + '.lock.reclaim'] }, { allowCreate });
   }
   async locked(id, fn, signal, deadline) {
     this.provider(id);
     const file = path.join(this.directory, id, 'tasks.json');
+    await this.verifyStorage(file);
     const release = await acquireLock(`${file}.lock`, { signal, operation: 'task-journal', timeout: deadline ? Math.max(1, deadline - Date.now()) : 180000 });
     try {
       const raw = await readState(file);
@@ -161,6 +169,7 @@ export class TaskKernel {
           }
           if (model && !adapter.prepareSettings) await adapter.browser.selectModel(model);
           task.baseline = await adapter.prepare({ prompt, files, existing_draft, model, thinking_level, answer_tier });
+          if (!task.baseline.baselineHash && typeof task.baseline.lastUser === 'string') task.baseline.baselineHash = textHash(task.baseline.lastUser);
           if (adapter.prepareSettings && task.baseline.answerTier) task.answer_tier = task.baseline.answerTier;
           const baselineURL = canonicalURL(task.baseline.url);
           if (!adapter.isRoot(baselineURL) && !adapter.isProvisional?.(baselineURL) && Object.values(state.tasks).some(other => other.task_id !== task.task_id && !terminal.has(other.state) && [other.conversation_url, other.baseline?.url].some(url => url && canonicalURL(url) === baselineURL))) {
@@ -283,19 +292,20 @@ export class TaskKernel {
           // From here the callback may mutate task state or settle generation.
           // A timeout after this boundary is not a purely observational timeout.
           observationOnly = false;
+          const identity = { url: observed.url, userCount: observed.userCount, promptHash: task.promptHash };
           if (!adapter.isProvisional?.(url)) task.conversation_url = url;
           if (task.retry_count && !task.retry_activity) {
             if (observed.busy || (observed.text && observed.text !== task.previous_response?.text)) task.retry_activity = true;
             else throw new WebUIError('RETRY_UNCONFIRMED', 'Only the previous answer is visible; retry completion is not confirmed. Do not click again.');
           }
           if (observed.complete && observed.responseCount > task.baseline.responseCount) {
-            await adapter.settle();
+            await adapter.settle(identity);
             task.state = 'completed'; task.blocking = false; releaseTask(state, task);
             task.response = { text: observed.text, format: 'plain_text', complete: true, model: observed.model || null, url: observed.url };
           } else if (cancel) {
             if (!observed.busy) throw new WebUIError('CANCEL_UNCONFIRMED', 'No active generation control could be confirmed. Task remains reserved.');
-            await adapter.cancel();
-            await adapter.settle({ allowIdle: true });
+            await adapter.cancel(identity);
+            await adapter.settle(identity, { allowIdle: true });
             task.state = 'cancelled'; task.blocking = false; releaseTask(state, task);
             task.response = { text: observed.text || '', format: 'plain_text', complete: false, model: observed.model || null, url: observed.url };
           } else { task.state = observed.busy ? 'running' : 'submitted'; task.blocking = true; }
@@ -356,7 +366,12 @@ export class TaskKernel {
         const expected = saved && !adapter.isProvisional?.(saved) ? saved : task.baseline?.url;
         if (!expected || canonicalURL(observed.url) !== canonicalURL(expected)) throw new WebUIError('CONVERSATION_CHANGED', 'Return to the original page before abandoning tracking.');
         if (observed.busy) throw new WebUIError('GENERATING', 'Generation is active. Use chat_cancel for the verified task.');
-        await adapter.settle({ allowIdle: true });
+        const sent = observed.userCount === task.baseline.userCount + 1 && matchesUserPrompt(task.promptHash, observed.lastUser, id === 'chatgpt' ? observed.identityCandidates : []);
+        const baseline = observed.userCount === task.baseline.userCount && observed.responseCount === task.baseline.responseCount &&
+          matchesUserPrompt(task.baseline.baselineHash, observed.lastUser);
+        if (!sent && !baseline) throw new WebUIError('TASK_IDENTITY_CHANGED', 'Neither the original sent turn nor the complete original baseline is confirmed; tracking was preserved.');
+        await adapter.settle({ url: observed.url, userCount: observed.userCount, promptHash: task.promptHash,
+          ...(sent ? {} : { baselineOnly: true, baselineHash: task.baseline.baselineHash, responseCount: task.baseline.responseCount }) }, { allowIdle: true });
       }, { signal, name: 'chat_abandon' });
       task.state = 'abandoned'; task.blocking = false; task.updated_at = Date.now();
       task.error = { code: 'TRACKING_ABANDONED', message: 'Tracking explicitly abandoned. Delivery and completion are not asserted; the request_id remains reserved.' };

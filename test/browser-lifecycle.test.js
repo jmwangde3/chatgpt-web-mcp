@@ -39,7 +39,9 @@ async function fixture(t, { legacy = false } = {}) {
   browser.close = async () => { calls.disconnects++; connected = false; browser.emit('disconnected'); };
   f.runtime = new AgentPersistentBrowser(config, {
     security: {
-      paths: async value => assert.equal(value, config),
+      paths: async value => assert.deepEqual(value, {
+        ...config, protectedFiles: [`${config.browserState}.launch-intent.json`],
+      }),
       // Independent Windows assessment; deliberately not derived from inspectPID.
       inspect: async state => { calls.assessments.push({ ...state }); return { state: f.assessment }; },
       process: async state => { calls.verified.push({ ...state }); return f.verify(state); },

@@ -2,12 +2,14 @@ import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { textHash } from '../src/shared/user-message-identity.js';
 
 // Node's test runner gives this file its own process. Configure every persistent
 // path before importing production modules; no user profile or browser is used.
-const directory = await fs.mkdtemp(new URL('../.generation-recovery-', import.meta.url));
+const directory = await fs.mkdtemp(path.join(tmpdir(), 'generation-recovery-'));
 for (const [key, name] of Object.entries({
   RUNTIME_STATE: 'runtime.json', BROWSER_STATE: 'browser.json', PROFILE: 'profile',
   OPERATION_LOCK: 'operation.lock', NETWORK_LOG: 'network.jsonl', CONTEXT_ARCHIVE_DIR: 'archive',
@@ -26,7 +28,8 @@ await once(exited, 'exit');
 const deadPid = exited.pid;
 assert.throws(() => process.kill(deadPid, 0));
 const url = 'https://chatgpt.com/c/recovery-unit';
-const generation = () => ({ active: true, ownerPid: deadPid, url, assistantBefore: 1, baselineResponse: 'baseline' });
+const generation = () => ({ active: true, ownerPid: deadPid, url, assistantBefore: 1, baselineResponse: 'baseline',
+  userCount: 1, promptHash: textHash('original prompt') });
 const read = async () => JSON.parse(await fs.readFile(RUNTIME_STATE_FILE, 'utf8'));
 const seed = async () => {
   const state = { activeGeneration: generation(), sentinel: 'preserve' };
@@ -43,7 +46,9 @@ function browser({ pageURL = url, text = 'changed complete reply', stop = false,
     return { url: () => pageURL, locator: () => ({ innerText: async () => '' }) };
   };
   instance.assistantLocator = () => ({ count: async () => 1, last: () => ({ innerText: async () => text }) });
-  instance.userLocator = () => ({ count: async () => 0 });
+  instance.userLocator = () => ({ count: async () => 1,
+    last: () => ({ evaluate: async () => 'original prompt' }) });
+  instance.userMessageSnapshot = async () => ({ count: 1, lastText: 'original prompt', identityCandidates: [] });
   instance.firstVisible = async () => stop ? { visible: true } : null;
   instance.assistantIsStreaming = async () => streaming;
   instance.currentMode = async () => 'normal';
@@ -77,6 +82,36 @@ test('dead owner plus same URL and complete changed reply clears generation', as
   assert.equal(state.sentinel, 'preserve');
   assert.ok(state.lastGenerationCompletedAt > 0);
   assert.deepEqual(await instance.assertActionsAllowed(), { allowed: true });
+});
+
+test('legacy generation without user identity cannot auto-release after a complete changed reply', async () => {
+  const state = await seed();
+  delete state.activeGeneration.userCount;
+  delete state.activeGeneration.promptHash;
+  await fs.writeFile(RUNTIME_STATE_FILE, JSON.stringify(state, null, 2) + '\n', 'utf8');
+  const before = await bytes();
+  const result = await latest(browser());
+  assert.equal(result.url, url);
+  assert.equal(result.generating, false);
+  assert.equal(result.activeGeneration.active, true);
+  assert.deepEqual(result.activeGeneration, state.activeGeneration);
+  assert.equal((await read()).activeGeneration.active, true);
+  assert.deepEqual(await bytes(), before);
+});
+
+test('same URL and user count with a different prompt cannot auto-release generation', async () => {
+  const state = await seed();
+  const before = await bytes();
+  const instance = browser();
+  instance.userMessageSnapshot = async () => ({ count: 1, lastText: 'different prompt', identityCandidates: [] });
+  const result = await latest(instance);
+  assert.equal(result.url, url);
+  assert.equal(result.userMessageCount, state.activeGeneration.userCount);
+  assert.equal(result.generating, false);
+  assert.equal(result.activeGeneration.active, true);
+  assert.deepEqual(result.activeGeneration, state.activeGeneration);
+  assert.equal((await read()).activeGeneration.active, true);
+  assert.deepEqual(await bytes(), before);
 });
 
 test('wrong URL rejects and preserves exact runtime bytes', async () => {

@@ -8,14 +8,23 @@ import { promisify } from "node:util";
 
 const runNode = promisify(execFile);
 
-function isolatedPolicyCheck(source, overrides = {}) {
+async function isolatedPolicyCheck(source, overrides = {}) {
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([name]) => !name.startsWith("CHATGPT_WEB_")),
   );
-  return runNode(process.execPath, ["--input-type=module", "--eval", source], {
+  const directory = await mkdtemp(path.join(tmpdir(), 'isolated-policy-'));
+  const paths = Object.fromEntries(Object.entries({
+    PROFILE: 'profile', BROWSER_STATE: 'browser.json', RUNTIME_STATE: 'runtime.json',
+    OPERATION_LOCK: 'operation.lock', NETWORK_LOG: 'network.jsonl', CONTEXT_ARCHIVE_DIR: 'archive',
+  }).map(([key, name]) => [`CHATGPT_WEB_${key}`, path.join(directory, name)]));
+  try {
+    return await runNode(process.execPath, ["--input-type=module", "--eval", source], {
     cwd: fileURLToPath(new URL("../", import.meta.url)),
-    env: { ...env, ...overrides },
+    env: { ...env, ...paths, ...overrides },
   });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 test("default intervals are five seconds and disabled probes never touch the browser", async () => {
@@ -81,11 +90,18 @@ test('ChatGPT session context isolates production runtime writes while preservin
       import { ChatGPTBrowser } from './src/browser.js';
       import { RUNTIME_STATE_FILE } from './src/config.js';
       const generation = { active: true, ownerPid: process.pid, url:'https://chatgpt.com/c/original' };
+      const { createHash } = await import('node:crypto');
+      const lastUser = 'session policy prompt';
+      const expected = { url: generation.url, userCount: 1,
+        promptHash: createHash('sha256').update(lastUser).digest('hex') };
       await writeFile(RUNTIME_STATE_FILE, JSON.stringify({activeGeneration:generation,sessions:{a:{activeGeneration:generation},b:{activeGeneration:generation}}}));
       const a = new ChatGPTBrowser({sessionId:'a'}), b = new ChatGPTBrowser({sessionId:'b'}), fresh = new ChatGPTBrowser({sessionId:'new'});
       a.firstVisible = async () => null;
-      a.getLatestResponse = async () => ({generating:false,activeGeneration:generation,url:generation.url});
-      await a.runExclusive(() => a.settleManagedGeneration({allowIdle:true}));
+      a.page = async () => ({ evaluate: async () => ({ url: generation.url,
+        count: 1, isLast: true, lastText: lastUser, identityCandidates: [] }) });
+      a.getLatestResponse = async () => ({generating:false,activeGeneration:generation,url:generation.url,
+        userMessageCount:1,lastUserMessage:lastUser,identitySnapshotValid:true});
+      await a.runExclusive(() => a.settleManagedGeneration(expected, {allowIdle:true}));
       const read = async () => JSON.parse(await readFile(RUNTIME_STATE_FILE,'utf8'));
       const state = await read();
       assert.equal(state.activeGeneration.active,true);

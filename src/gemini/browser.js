@@ -1,4 +1,7 @@
 import { controlRequest } from '../shared/control.js';
+import { verifyDataPaths } from '../shared/data-security.js';
+import { bootstrapSendGuard, guardedSend } from '../shared/send-guard.js';
+import { textHash, matchesUserPrompt } from '../shared/user-message-identity.js';
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -8,6 +11,8 @@ import { geminiConfig } from "./config.js";
 import { SELECTORS } from "./selectors.js";
 import { sessionPage, sessionView, mergeSessionView, validateSessionId } from '../shared/sessions.js';
 const SESSION_FIELDS = ['pending', 'selectedURL', 'sessionInitialized'];
+const guardedContexts = new WeakSet();
+const GEMINI_REGION = 'input-area, .input-area, .input-area-container, bard-input';
 
 // Gemini renders prompt lines with layout whitespace different from Quill's
 // composer. Normalize only the acknowledgement hash; draft checks stay exact.
@@ -40,6 +45,7 @@ export class GeminiBrowser {
 
   runExclusive(operation, { signal } = {}) {
     const execute = async () => {
+      await verifyDataPaths({ operationLock: this.config.operationLock, runtimeState: this.config.runtimeState });
       const release = await acquireLock(this.config.operationLock, { signal, timeout: this.config.actionTimeout });
       this.signal = signal;
       const onAbort = () => { void this.runtime.disconnect().catch(() => {}); };
@@ -72,6 +78,10 @@ export class GeminiBrowser {
     this.signal?.throwIfAborted();
     if (this.currentPage && !this.currentPage.isClosed()) return this.currentPage;
     const context = await this.runtime.connect(this.signal);
+    if (!guardedContexts.has(context)) {
+      await context.addInitScript(bootstrapSendGuard);
+      guardedContexts.add(context);
+    }
     const state = await this.state();
     const page = await sessionPage(context, {
       signal: this.signal, timeout: this.config.actionTimeout,
@@ -225,14 +235,22 @@ export class GeminiBrowser {
     const { snapshot: before } = await this.editable();
     if (!before.draft.trim()) throw new WebUIError("EMPTY_PROMPT", "Write a prompt before submitting.");
     await this.throttle("send");
-    const { snapshot: s } = await this.editable();
-    if (s.url !== before.url || s.draft !== before.draft || JSON.stringify(s.attachments) !== JSON.stringify(before.attachments)) throw new WebUIError("COMPOSER_CHANGED", "The draft, attachments, or conversation changed before sending.");
+    const { composer, snapshot: s } = await this.editable();
+    if (s.url !== before.url || s.userCount !== before.userCount || s.draft !== before.draft || JSON.stringify(s.attachments) !== JSON.stringify(before.attachments)) throw new WebUIError("COMPOSER_CHANGED", "The draft, attachments, or conversation changed before sending.");
     const send = await this.first(SELECTORS.send);
     if (!send || !await send.isEnabled()) throw new WebUIError("SEND_UNAVAILABLE", "Gemini send button is unavailable; wait for uploads to complete.");
-    // Persist intent before clicking. Errors/cancellation must never cause a resend.
-    await beforeSubmit?.();
-    await this.update({ pending: { originalURL: s.url, conversationURL: /\/app\/.+/.test(s.url) ? s.url : null, userCount: s.userCount, responseCount: s.responseCount, promptHash: hash(s.draft), startedAt: Date.now() }, lastSendAt: Date.now() });
-    await send.click({ timeout: this.config.actionTimeout });
+    await guardedSend({ page: await this.page(), composer, button: send,
+      expectedText: s.draft, expectedURL: s.url, allowedOrigin: 'https://gemini.google.com',
+      gemini: { region: GEMINI_REGION, composer: SELECTORS.composer.join(','), send: SELECTORS.send.join(','),
+        user: SELECTORS.user, stop: SELECTORS.stop.join(','), attachments: SELECTORS.attachments,
+        userCount: s.userCount, expectedAttachments: s.attachments },
+      click: async button => {
+        // Pin attachments and nodes before either asynchronous persistence window.
+        await beforeSubmit?.();
+        await this.update({ pending: { originalURL: s.url, conversationURL: /\/app\/.+/.test(s.url) ? s.url : null, userCount: s.userCount, responseCount: s.responseCount, promptHash: hash(s.draft), baselineHash: textHash(s.lastUser || ''), startedAt: Date.now() }, lastSendAt: Date.now() });
+        await button.click({ timeout: this.config.actionTimeout });
+      },
+    });
     return wait ? this.waitForResponse({ timeoutMs }) : { submitted: true, pending: true, url: (await this.page()).url() };
   }
 
@@ -289,13 +307,13 @@ export class GeminiBrowser {
       const pending = (await this.state()).pending;
       if (!pending) return this.getLatestResponse();
       if (pending.conversationURL && s.url !== pending.conversationURL) throw new WebUIError("CONVERSATION_CHANGED", "Gemini conversation changed while waiting; pending send was preserved.");
-      const acknowledged = s.userCount > pending.userCount && hash(s.lastUser) === pending.promptHash;
+      const acknowledged = s.userCount === pending.userCount + 1 && hash(s.lastUser) === pending.promptHash;
       if (acknowledged && !s.busy && isResponseFailure(s.text)) throw new WebUIError('PAGE_ERROR', 'Gemini returned a service error instead of an answer. Inspect the page; do not automatically resend.');
       if (acknowledged && !pending.conversationURL && /\/app\/.+/.test(s.url)) await this.update({ pending: { ...pending, conversationURL: s.url }, selectedURL: s.url });
       const signature = JSON.stringify([s.text, s.busy, s.completeControl, s.userCount, s.responseCount]);
       if (signature !== previous) { previous = signature; stableSince = Date.now(); }
       if (acknowledged && s.responseCount > pending.responseCount && s.text && !s.busy && s.completeControl && Date.now() - stableSince >= 2000) {
-        await this.update({ pending: null, lastCompletedAt: Date.now(), selectedURL: s.url });
+        await this.settlePending({ url: s.url, userCount: s.userCount, promptHash: textHash(s.lastUser) });
         return { provider: "gemini", url: s.url, text: s.text, complete: true, pending: false, model: s.model };
       }
       if (s.alerts && !isRateLimit(s.alerts)) throw new WebUIError("PAGE_ERROR", "Gemini displays an error. Inspect the page; the send remains pending to prevent duplicates.");
@@ -322,11 +340,58 @@ export class GeminiBrowser {
     return { provider: "gemini", url: s.url, text: pending && s.responseCount <= pending.responseCount ? "" : s.text, complete: !!s.text && !s.busy && s.completeControl && !pending, pending: !!pending, model: s.model };
   }
 
-  async resolvePending({ confirmed }) {
-    if (confirmed !== true) throw new WebUIError("CONFIRMATION_REQUIRED", "Manually inspect the page and confirm the previous send is resolved.");
+  async settlePending(expected, options = {}) {
+    const pending = (await this.state()).pending;
     const s = await this.snapshot();
-    if (s.busy) throw new WebUIError("GENERATING", "Gemini is still generating.");
-    await this.update({ pending: null });
+    if (s.busy) throw new WebUIError('GENERATING', 'Gemini is still generating.');
+    if (!expected || s.url !== expected.url || s.userCount !== expected.userCount ||
+        (!expected.baselineOnly && !matchesUserPrompt(expected.promptHash, s.lastUser)) ||
+        (expected.baselineOnly && (!matchesUserPrompt(expected.baselineHash, s.lastUser) ||
+          s.responseCount !== expected.responseCount))) {
+      throw new WebUIError('TASK_IDENTITY_CHANGED', 'Gemini task identity changed; pending was preserved.');
+    }
+    if (pending) {
+      const baseline = expected.baselineOnly === true;
+      let firstBinding = false;
+      if (!baseline && !pending.conversationURL &&
+          /^https:\/\/gemini\.google\.com\/app\/?$/.test(pending.originalURL) &&
+          expected.promptHash === pending.promptHash) {
+        try {
+          // TaskKernel's wait:false path observes the permanent URL without
+          // calling waitForResponse(), which normally binds this pending send.
+          firstBinding = conversationURL(s.url) !== 'https://gemini.google.com/app';
+        } catch { /* An invalid destination cannot acquire the binding. */ }
+      }
+      if ((!firstBinding && s.url !== (pending.conversationURL || pending.originalURL)) ||
+          s.userCount !== pending.userCount + (baseline ? 0 : 1) ||
+          (baseline ? expected.promptHash !== pending.promptHash || expected.baselineHash !== pending.baselineHash || s.responseCount !== pending.responseCount : hash(s.lastUser) !== pending.promptHash)) {
+        throw new WebUIError('TASK_IDENTITY_CHANGED', 'Gemini pending identity changed; pending was preserved.');
+      }
+    }
+    // Commit the verified destination and settle together, with no intervening
+    // pending-binding write (and therefore no extra asynchronous race window).
+    await this.update({ pending: null, lastCompletedAt: Date.now(), selectedURL: s.url });
+    return { settled: true };
+  }
+
+  async resolvePending({ confirmed, expected } = {}) {
+    if (confirmed !== true) throw new WebUIError("CONFIRMATION_REQUIRED", "Manually inspect the page and confirm the previous send is resolved.");
+    const pending = (await this.state()).pending;
+    if (!pending) return { resolved: true, resent: false };
+    if (!expected) {
+      const observed = await this.snapshot();
+      const baselineOnly = observed.userCount === pending.userCount;
+      let url = pending.conversationURL || pending.originalURL;
+      if (!baselineOnly && !pending.conversationURL && /^https:\/\/gemini\.google\.com\/app\/?$/.test(pending.originalURL)) {
+        // The public full tool supplies only confirmed=true. Bind a root send
+        // through the same exact message/count checks as managed settlement.
+        const destination = conversationURL(observed.url);
+        if (destination !== 'https://gemini.google.com/app') url = observed.url;
+      }
+      expected = { url, userCount: pending.userCount + (baselineOnly ? 0 : 1), promptHash: pending.promptHash,
+        ...(baselineOnly ? { baselineOnly: true, baselineHash: pending.baselineHash, responseCount: pending.responseCount } : {}) };
+    }
+    await this.settlePending(expected);
     return { resolved: true, resent: false };
   }
 

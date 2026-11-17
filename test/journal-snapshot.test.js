@@ -13,7 +13,7 @@ const journal = (...tasks) => ({ version: 2, active: null, tasks: Object.fromEnt
 async function fixture(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'journal-snapshot-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  return { kernel: new TaskKernel([{ id: 'chatgpt' }], { directory }), file: path.join(directory, 'chatgpt', 'tasks.json') };
+  return { kernel: new TaskKernel([{ id: 'chatgpt' }], { directory, verifyStoragePaths: async () => {} }), file: path.join(directory, 'chatgpt', 'tasks.json') };
 }
 
 test('snapshot list and request lookup finish while a real live journal lock remains held', async t => {
@@ -46,15 +46,9 @@ test('atomic rename readers see only complete old or new validated snapshots', a
   const seen = [];
   const writer = async () => {
     for (let i = 0; i < 60; i++) {
-      // Windows can deny replacement while a reader has the destination open.
-      // Retry only the synthetic writer; every published version is still atomic.
-      for (let attempt = 0; ; attempt++) {
-        try { await writeState(file, i % 2 ? old : next); break; }
-        catch (error) {
-          if (!['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 100) throw error;
-          await delay(2);
-        }
-      }
+      // Exercise the production writer's bounded retries, with no synthetic
+      // retry wrapper hiding a publication failure under concurrent reads.
+      await writeState(file, i % 2 ? old : next);
     }
   };
   const reader = async () => {

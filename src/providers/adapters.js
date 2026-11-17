@@ -3,13 +3,12 @@ import { SELECTORS as geminiSelectors } from '../gemini/selectors.js';
 import { WebUIError } from '../shared/persistent-browser.js';
 import { USER_DATA_DIR, CHROME_EXECUTABLE, BROWSER_STATE_FILE, RUNTIME_STATE_FILE, OPERATION_LOCK_FILE } from '../config.js';
 import { isResponseFailure } from '../gemini/browser.js';
-import { classifyRateLimitText } from '../browser.js';
+import { classifyRateLimitText, readUserMessageIdentityDOM } from '../browser.js';
+import { guardedStop, readGeminiStopIdentity } from '../shared/stop-guard.js';
+import { textHash } from '../shared/user-message-identity.js';
 
-async function stop(browser, selectors) {
-  const button = await browser.firstVisible?.(selectors, { timeout: 500 }) || await browser.first?.(selectors);
-  if (!button) throw new WebUIError('STOP_UNAVAILABLE', 'Generation stop control is unavailable; task remains reserved.');
-  await button.click();
-  await (await browser.page()).waitForFunction((selectors) => !selectors.some((s) => [...document.querySelectorAll(s)].some((e) => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden')), selectors, { timeout: 20000 });
+async function stop(browser, selectors, users, readIdentity, expected) {
+  return guardedStop({ page: await browser.page(), stops: selectors.join(','), users, readIdentity, expected });
 }
 
 export function geminiProvider(browser) {
@@ -27,7 +26,7 @@ export function geminiProvider(browser) {
         await browser.waitForUploads(files, { exact: true });
       }
       const s = await browser.snapshot();
-      return { url: s.url, userCount: s.userCount, responseCount: s.responseCount };
+      return { url: s.url, userCount: s.userCount, responseCount: s.responseCount, baselineHash: textHash(s.lastUser || '') };
     },
     async send({ prompt, files, existing_draft, beforeSubmit }) {
       if (!existing_draft) {
@@ -41,9 +40,9 @@ export function geminiProvider(browser) {
       if (!allowPageError && !s.busy && isResponseFailure(s.text)) throw new WebUIError('PAGE_ERROR', 'Gemini returned a service error instead of an answer. No automatic retry.');
       return { ...s, complete: !!s.text && !s.busy && s.completeControl };
     },
-    async settle() { await browser.update({ pending: null, lastCompletedAt: Date.now() }); },
+    settle: (expected, options) => browser.settlePending(expected, options),
     prepareRetry: (observed) => browser.prepareRetry(observed),
-    cancel: () => stop(browser, geminiSelectors.stop),
+    cancel: expected => stop(browser, geminiSelectors.stop, geminiSelectors.user, readGeminiStopIdentity, expected),
   };
 }
 
@@ -62,9 +61,10 @@ export function chatgptProvider(browser) {
       await browser.ensureConversationCapacity({ allowRotate: false });
       await browser.refreshBeforeSend({ reason: 'unified-send' });
       const settings = await browser.applySendSettings({ model, thinkingLevel: thinking_level, answerTier: answer_tier });
-      const s = await browser.getLatestResponse({ includeTranscript: false });
+      const s = await browser.getLatestResponse({ includeTranscript: false, includeIdentityCandidates: true });
       if (s.generating) throw new WebUIError('GENERATING', 'ChatGPT is still generating.');
-      return { url: s.url, userCount: s.userMessageCount, responseCount: s.assistantMessageCount, ...(settings.answerTier ? { answerTier: settings.answerTier } : {}) };
+      if (s.userMessageCount > 0 && s.identitySnapshotValid === false) throw new WebUIError('TASK_IDENTITY_CHANGED', 'Baseline identity is unstable.');
+      return { url: s.url, userCount: s.userMessageCount, responseCount: s.assistantMessageCount, baselineHash: textHash(s.lastUserMessage || ''), ...(settings.answerTier ? { answerTier: settings.answerTier } : {}) };
     },
     async send({ prompt, files, beforeSubmit }) {
       if (files.length) await browser.uploadFiles(files);
@@ -83,7 +83,7 @@ export function chatgptProvider(browser) {
       if (s.rateLimited && !readableAnswer) throw new WebUIError('RATE_LIMITED', 'ChatGPT displays a rate-limit warning without a completed answer. No retry was sent.');
       return { url: s.url, userCount: s.userMessageCount, responseCount: s.assistantMessageCount, lastUser: s.identitySnapshotValid === false ? '' : s.lastUserMessage || '', identityCandidates: s.identitySnapshotValid === false ? [] : s.identityCandidates || [], text: s.response || '', busy: s.generating, complete: !!s.response && !s.generating, model: s.model };
     },
-    settle: (options) => browser.settleManagedGeneration(options),
-    cancel: () => stop(browser, chatgptSelectors.stopButton),
+    settle: (expected, options) => browser.settleManagedGeneration(expected, options),
+    cancel: expected => stop(browser, chatgptSelectors.stopButton, chatgptSelectors.userMessages.join(','), readUserMessageIdentityDOM, expected),
   };
 }

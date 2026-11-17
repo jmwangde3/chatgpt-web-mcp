@@ -13,6 +13,7 @@ const required = [
   'skills/gh-review/references/github-review-workflow.md',
   'skills/local-review/SKILL.md',
   'skills/local-review/references/local-review-workflow.md', 'docs/REVIEW_SKILLS.md',
+  'src/shared/data-security.js', 'src/shared/stop-guard.js', 'src/shared/locks.js', 'src/shared/windows-capabilities.js',
 ];
 const missing = required.filter(file => !files.includes(file));
 const forbidden = files.filter(file => /(?:^|\/)(?:\.v21-private|\.deployment-evidence|chrome-profile|backups?|node_modules)(?:\/|$)/i.test(file) || /(?:^|\/)(?:\.env|tasks\.json|browser-state\.json|runtime-state\.json|config\.toml)(?:$|\.bak)/i.test(file));

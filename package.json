@@ -1,6 +1,6 @@
 {
   "name": "chatgpt-web-mcp",
-  "version": "0.7.11",
+  "version": "0.7.12",
   "type": "module",
   "description": "A local MCP server for ChatGPT and Gemini web UIs with isolated persistent browser profiles.",
   "license": "MIT",
@@ -60,8 +60,8 @@
     "inspect": "node scripts/inspect.js",
     "doctor": "node src/cli.js doctor",
     "smoke": "node scripts/smoke-mcp.js",
-    "test": "node --test",
-    "test:browser": "node --test integration/gemini.browser.js integration/panel.browser.js integration/chatgpt-messages.browser.js integration/sessions.browser.js integration/composer-menu.browser.js integration/send-guard.browser.js integration/windows-security.browser.js integration/fenced-identity.browser.js",
+    "test": "node --test --test-reporter=tap",
+    "test:browser": "node --test --test-reporter=tap integration/gemini.browser.js integration/panel.browser.js integration/chatgpt-messages.browser.js integration/sessions.browser.js integration/composer-menu.browser.js integration/send-guard.browser.js integration/windows-security.browser.js integration/fenced-identity.browser.js integration/gemini-send-guard.browser.js integration/stop-guard.browser.js integration/windows-network-capability.browser.js",
     "verify:package": "node scripts/verify-package.js",
     "setup": "node src/cli.js setup",
     "upgrade": "node src/cli.js upgrade",
@@ -72,9 +72,9 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.17.5",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "playwright-core": "^1.54.2",
-    "zod": "^3.25.76"
+    "zod": "^4.6.7"
   },
   "contributors": [
     "Tw6249"
