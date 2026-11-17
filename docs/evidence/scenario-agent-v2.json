@@ -1,0 +1,293 @@
+{
+  "schema_version": 2,
+  "evaluation": "offline_agent_decision_simulation",
+  "simulation": true,
+  "scope": "仅模拟每个场景的执行器下一步决策；与真实双轮 Web 证据分开。",
+  "limitations": [
+    "不验证网络权限。",
+    "不验证真实源读取；场景提供的 Web 读取事实只是假设输入，不代表本执行器实际访问了公开或私有仓库。",
+    "不验证实际工具副作用。",
+    "未联网、未发送消息、未 commit、未 push；action 均为假设场景中的下一步，不在本验收中执行。"
+  ],
+  "sources_read": [
+    "skills/codex-chatgpt-review-github/SKILL.md",
+    "skills/codex-chatgpt-review-github/references/github-review-workflow.md",
+    "skills/codex-chatgpt-review-github/references/code-review-protocol.md",
+    "skills/codex-chatgpt-review-local/SKILL.md",
+    "skills/codex-chatgpt-review-local/references/local-review-workflow.md"
+  ],
+  "decision_semantics": {
+    "push_allowed": "场景授权与门禁是否允许下一阶段推送；不代表本次离线任务允许或已执行推送。false 不影响已有远端 SHA 的只读复审。",
+    "can_pass": "给定输入是否已具备有效审查证据、允许进入 PASS 判定。true 仍须满足 pass_conditions，绝非已产生真实 PASS；false 表示当前不得 PASS。",
+    "missing_facts": "不补造审查结论、授权或测试结果；缺失项写入 action、reason 或 pass_conditions。",
+    "global_pass_conditions": [
+      "审查版本与必要覆盖范围可核。",
+      "无未解决 P0/P1，无新的确定性严重问题。",
+      "所有采纳问题均有测试且在当前新代码上已验证。"
+    ]
+  },
+  "cases": [
+    {
+      "id": "G01",
+      "simulation": true,
+      "mode": "github",
+      "action": "核对 Web 返回的仓库、完整固定 SHA、实读 Diff/源码/必要上下游及测试覆盖，逐条独立核实问题后按共享协议裁决；当前 SHA 已同步，无须重复推送。",
+      "push_allowed": true,
+      "can_pass": true,
+      "status": "PASS_ELIGIBLE",
+      "pass_conditions": "满足全局 PASS 条件；题设未提供无问题结论，不能直接宣布 PASS。后续新推送仍须重新执行提交门禁。",
+      "reason": "auto 的 GitHub 条件成立，且题设提供了同 SHA 的完整实际源码读取证据。"
+    },
+    {
+      "id": "G02",
+      "simulation": true,
+      "mode": "github",
+      "action": "沿用固定 SHA 的 GitHub 审查，核对明确的 Web 私库授权与其实际读取清单，再独立复核审查意见。",
+      "push_allowed": true,
+      "can_pass": true,
+      "status": "PASS_ELIGIBLE",
+      "pass_conditions": "满足全局 PASS 条件；后续推送仍须门禁。",
+      "reason": "私有属性本身不是阻断条件；题设已明确 Web 授权并继承 G01 的同版本完整读取条件。并未真实访问私库。"
+    },
+    {
+      "id": "G03",
+      "simulation": true,
+      "mode": "local",
+      "action": "停止 GitHub 路径，转本地 Skill；从磁盘采集已授权的必要代码、调用关系、Diff、测试与哈希，检查敏感信息后准备本地证据审查。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "NEEDS_LOCAL_REVIEW",
+      "reason": "auto 下 Web 403 使 GitHub 前提失败，但本地必要代码外发已获许可；必须等待新本地证据的有效审查，不能沿用失败的 GitHub 结论。"
+    },
+    {
+      "id": "G04",
+      "simulation": true,
+      "mode": "local",
+      "action": "直接从已授权文件读取最新代码、行号及 SHA-256，注明无 Git Diff 及比较基线，准备必要上下游与测试证据。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "NEEDS_LOCAL_REVIEW",
+      "reason": "auto 无 Git 不满足 GitHub 前提，但允许 Web 证据时可本地审查；不自动建仓或创建 remote。"
+    },
+    {
+      "id": "G05",
+      "simulation": true,
+      "mode": "github",
+      "action": "核对变更归属、实际默认分支、完整 staged 内容与测试对应版本；只暂存明确的任务文件，运行 staged diff 检查，常规提交后推送指定非默认 review 分支；检查 push 退出码并比对远端完整 SHA，再要求 Web 自行读取该 SHA。",
+      "push_allowed": true,
+      "can_pass": false,
+      "status": "PREPARE_COMMIT_AND_PUSH",
+      "reason": "强制 github 不代表未提交就永久阻塞；题设支持安全补齐提交和推送前提。不得 add -A、force push 或推默认分支；还缺 Web 新 SHA 实读和审查结论。"
+    },
+    {
+      "id": "G06",
+      "simulation": true,
+      "mode": "github",
+      "action": "停止 GitHub 复审，报告 push 退出 1 及远端仍为旧 SHA；保留本地提交并诊断失败原因，不发送旧 SHA 冒充新版本，不自动 force push。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "BLOCKED",
+      "reason": "推送失败且远端不同步，当前不得继续推进或声称已同步；恢复权限和常规推送条件后才可重新过门禁。"
+    },
+    {
+      "id": "G07",
+      "simulation": true,
+      "mode": "github",
+      "action": "拒绝本轮结论，记录实际返回 SHA 与指定 SHA 的差异；在轮次限额内要求重新实际读取指定 SHA，否则交还未完成状态。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "INVALID_REVIEW",
+      "reason": "SHA 不匹配使审查失效；问题是证据版本，重推不能修复。题设亦未提供新推送授权和门禁。"
+    },
+    {
+      "id": "G08",
+      "simulation": true,
+      "mode": "github",
+      "action": "继续以指定不变的 review SHA 和原比较基线核验实读范围；不自动切换到 main HEAD，也不为追赶 main 自动合并或重推。",
+      "push_allowed": false,
+      "can_pass": true,
+      "status": "PASS_ELIGIBLE_FOR_PINNED_SHA",
+      "pass_conditions": "该固定 review SHA 已有完整有效实读且满足全局 PASS 条件；若尚无实读则先审查。结论仅覆盖固定 SHA，不证明与最新 main 集成通过。",
+      "reason": "main 新提交不使不可变 review SHA 的已有有效审查自动失效；题设不构成新推送授权。"
+    },
+    {
+      "id": "G09",
+      "simulation": true,
+      "mode": "github",
+      "action": "立即阻止候选提交和推送，不打印 .env 秘密；定位候选提交集合中的敏感内容并报告阻断，准备经批准的安全处理方案，再重新检查全部候选内容。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "BLOCKED_SENSITIVE_CONTENT",
+      "reason": "明确敏感 .env 命中硬门禁；仅忽略文件名不足以消除提交集合中的秘密，也不得改走 local 外发秘密。"
+    },
+    {
+      "id": "G10",
+      "simulation": true,
+      "mode": "local",
+      "action": "直接进入本地 Skill，不测试或执行 GitHub 推送；核对必要本地代码分享许可后读取最新最小证据。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "NEEDS_LOCAL_EVIDENCE_AND_AUTHORIZATION",
+      "reason": "用户显式 local 覆盖 auto 偏好；GitHub 可读不改变选择。local 模式本身不等于已授权向 Web 发代码。"
+    },
+    {
+      "id": "G11",
+      "simulation": true,
+      "mode": "github",
+      "action": "报告 Web 403 导致强制 github 审查阻塞，停止结案；不自动切本地、不改变仓库可见性。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "BLOCKED",
+      "reason": "显式 github 不允许 auto 回退；推送不能替代 Web 访问授权或真实源码读取。"
+    },
+    {
+      "id": "G12",
+      "simulation": true,
+      "mode": "github",
+      "action": "确认新 SHA 与远端一致，沿用原 session_id、使用本轮新 request_id，要求 Web 实读新 SHA 的修复、相关调用和测试；保留旧问题 ID 并检查新增问题。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "NEEDS_SECOND_ROUND_REVIEW",
+      "reason": "已修复、测试通过且新 SHA 已推仅支持 IMPLEMENTED/TESTED；仍需新版本实读验证才能 VERIFIED 或 PASS。无须重复推送；第二轮后到默认上限则报告剩余状态。"
+    },
+    {
+      "id": "G13",
+      "simulation": true,
+      "mode": "github",
+      "action": "不把旧问题标为 VERIFIED；要求实读新 SHA 的修复代码及必要上下游，无法补证则输出未完成和证据缺口。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "INVALID_REVIEW",
+      "reason": "文字声称修复不等于新代码验证，网页未读新 SHA 使本轮证据无效。"
+    },
+    {
+      "id": "G14",
+      "simulation": true,
+      "mode": "github_unresolved",
+      "action": "列明必要文件未读及其影响，将本轮读取标记 INCOMPLETE；auto 且获本地外发许可时转本地补证，强制 github 则报告阻塞。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "INCOMPLETE",
+      "reason": "必要源码缺失直接破坏覆盖；不能凭其他文件或摘要给 PASS。题设未给模式和本地分享许可，不能擅自回退。"
+    },
+    {
+      "id": "L01",
+      "simulation": true,
+      "mode": "local",
+      "action": "核对分享许可，读取两文件中与任务相关的最新代码、行号、哈希、精简 Diff 和测试；按实际依赖决定片段范围，不生成永久全仓摘要。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "PREPARE_MINIMAL_EVIDENCE",
+      "reason": "小项目使用足以判断正确性的最小证据，文件数量小不等于已有审查通过。"
+    },
+    {
+      "id": "L02",
+      "simulation": true,
+      "mode": "local",
+      "action": "除变更文件外读取影响正确性的直接调用方、相关参数和返回值约束、测试，带最新行号与哈希加入获准证据。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "NEEDS_CALLER_CONTEXT",
+      "reason": "仅一个文件有改动不代表可以省略决定结论的调用方；缺必要调用上下文不得 PASS。"
+    },
+    {
+      "id": "L03",
+      "simulation": true,
+      "mode": "local",
+      "action": "列出所有本轮相关变化文件及必要调用链、配置/状态结构和测试，逐个读取当前代码、Diff、行号与哈希，建立本轮 Evidence ID 和覆盖清单。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "PREPARE_RELATED_FILE_EVIDENCE",
+      "reason": "多相关文件需覆盖交互关系，不能只取一个代表文件，也不应发送无关目录。"
+    },
+    {
+      "id": "L04",
+      "simulation": true,
+      "mode": "local",
+      "action": "第二轮发现哈希变化即重读该文件、更新行号与 Diff，重新核对测试对应代码；生成新 Evidence ID、新 request_id，原 session_id 内核验旧问题和新问题。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "REFRESH_CHANGED_EVIDENCE",
+      "reason": "不能引用旧哈希证据作为最新代码；第二轮仍须完成新证据验证，之后遵守两轮上限。"
+    },
+    {
+      "id": "L05",
+      "simulation": true,
+      "mode": "local",
+      "action": "判旧回复不能覆盖当前代码，从磁盘重读上轮后变化的文件、必要上下游及测试；核验未变文件哈希，按本轮新证据重审。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "STALE_EVIDENCE",
+      "reason": "代码自上轮已变，旧网页答复不能证明当前版本通过；不把旧已读清单直接搬到本轮。"
+    },
+    {
+      "id": "L06",
+      "simulation": true,
+      "mode": "local",
+      "action": "直接读取获准文件最新内容、行号与 SHA-256，注明无 Git Diff、记录手动比较基线或基线缺失，附实际测试结果后准备审查。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "PREPARE_EVIDENCE_WITHOUT_GIT",
+      "reason": "local 不依赖 Git，不因无仓库而失败；不能虚构 Diff、HEAD 或测试结果。"
+    },
+    {
+      "id": "L07",
+      "simulation": true,
+      "mode": "local",
+      "action": "按明确许可采集并检查必要本地代码、调用上下文、Diff、哈希与测试，准备向 ChatGPT 的本地证据审查；不推 GitHub。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "AUTHORIZED_LOCAL_REVIEW_PENDING",
+      "reason": "禁止 GitHub push 不等于禁止向 ChatGPT 发送必要代码，题设已有明确外发许可，无须重复询问；仍需完成有效审查。"
+    },
+    {
+      "id": "L08",
+      "simulation": true,
+      "mode": "local",
+      "action": "保留原 task_id、request_id、参数及 session_id，只按既有取回机制继续观察原 task_id；达到等待边界则报告仍运行或结果未确定，不创建新请求重发。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "RUNNING_OBSERVATION_TIMEOUT",
+      "reason": "state=running 且 timed_out=true 表示观察超时，不能推定任务失败、取消或审查完成；提交不确定时停止自动重发。"
+    },
+    {
+      "id": "L09",
+      "simulation": true,
+      "mode": "local",
+      "action": "保留所有决定正确性的函数与调用路径，将获准证据按依赖分批送入同一 session；每批新 request_id、等待前批完成并记录覆盖，完整覆盖后才裁决。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "BATCH_REQUIRED_EVIDENCE",
+      "reason": "证据大不能靠抽象摘要或截断关键函数缩减；必要证据未读完不得 PASS，不在项目永久落盘大量原文件。"
+    },
+    {
+      "id": "M01",
+      "simulation": true,
+      "scenario": "原 github，现用户指定 local",
+      "mode": "local",
+      "action": "立即采用最新 local 指令，停止计划中的 GitHub 提交推送；核对本地代码分享许可，重新采集当前哈希证据，保留问题 ID；可沿用原会话但新轮新 request_id。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "MODE_SWITCH_LOCAL",
+      "reason": "当前明确指令优先于旧 github 模式；不把旧 GitHub 读取当作当前 local 证据或擅自继续推送。"
+    },
+    {
+      "id": "M02",
+      "simulation": true,
+      "scenario": "用户明确完全禁止任何代码外发",
+      "mode": "codex_local_only",
+      "action": "停止所有 Web 代码审查和外发，包括 GitHub push、源码片段和证据上传；仅执行获准的 Codex 本地检查，输出本地发现及未完成 Web 审查的限制。",
+      "push_allowed": false,
+      "can_pass": false,
+      "status": "WEB_REVIEW_BLOCKED_BY_USER",
+      "reason": "local Skill 仍涉及向 ChatGPT 外发，不能绕过完全禁止；本地检查结果不可冒充网页复审 PASS，也不能沿用旧许可。"
+    }
+  ],
+  "main_agent_check": {
+    "decision_expectations_matched": 25,
+    "case_count": 25,
+    "scope": "routing and stop/continue decisions only; not real external failure injection",
+    "claim": "simulation decisions matched; no assertion of 25 real-world integration PASS"
+  },
+  "evidence_scope": "Historical V2.0 execution; source paths have V2.1 aliases. This is not a rerun of the changed candidate."
+}

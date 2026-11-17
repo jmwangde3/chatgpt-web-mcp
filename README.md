@@ -1,5 +1,9 @@
 # ChatGPT & Gemini Web MCP
 
+## 代码复审 Skill
+
+`gh-review` 是 ChatGPT Web 代码复审的统一入口（auto/github/local），`local-review` 处理显式本地证据或被委派的回退；两项复用已安装的 `web-chat`，不会自动切换宿主模型、注册第二份 MCP 或取得外发许可。成对安装、更新、卸载及 npm 包取文件见 [REVIEW_SKILLS.md](docs/REVIEW_SKILLS.md)。
+
 ## 当前发送默认值
 
 ChatGPT 的 `chat_send` 和 `chatgpt_send_message` 在未指定模型、思考强度及回答档位时，发送前选择并重新核验 **GPT-6 + 高**；不可用或无法核验时停止发送。显式设置优先：只指定模型或强度时，另一项保留页面当前值；指定回答档位时不套用默认值。同值的强度和回答档位只设置一次，冲突则停止。Gemini 不受此底层默认值影响。旧 `chatgpt_route_new_chat` 仅在显式调用时保留其极高路由，不作为普通发送的自动步骤。已有 MCP 连接须重连以加载更新。
@@ -20,11 +24,11 @@ ChatGPT 的 `chat_send` 和 `chatgpt_send_message` 在未指定模型、思考�
 
 [English](README.en.md)
 
-## Gemini Argon 网页适配（0.7.10）
+## Gemini Argon 网页适配（0.7.10 历史说明）
 
 - 支持新版可折叠的 Thinking level 子菜单，等待选项展开后选择并重新核验 High；保留旧版平铺档位和 Extended thinking 开关支持。
-- 网页专家 Skill 默认使用 Gemini **4 Argon + High**。显式平台和模型选择优先；模型或 High 无法核验时停止，不自动降级。此默认值由 Skill 执行，底层 MCP 仍要求显式 provider，发送时保留已选择的设置。
-- 升级 MCP 后重连，并同步复制 `skills/web-chat`，让已安装 Skill 使用新默认值。
+- 0.7.10 的网页专家 Skill 曾默认使用 Gemini **4 Argon + High**，这是历史版本行为。当前默认咨询模型为 ChatGPT **GPT-6 + 高**。Gemini 仍受支持，必须遵从用户明确的平台和模型选择；模型或思考强度无法核验时停止，不自动降级。底层 MCP 仍要求显式 provider。
+- 升级 MCP 后重连；已安装的 `skills/web-chat` 需单独更新。此处历史默认值不代表当前设置。
 
 ## 网页兼容修复（0.7.2）
 
@@ -287,6 +291,10 @@ chatgpt-web-mcp help     显示帮助
 保留 PR 的旧进程锁回收逻辑：记录的 MCP 进程已退出时，后续操作会自动清除其生成标记，避免遗留锁阻塞。进程仍存活或标记未记录进程 ID 时，不按此规则清除；这不会同时清除限流熔断，也不会关闭浏览器。
 
 ## 其他环境变量
+
+`CHATGPT_WEB_MCP_TOOLSET` 默认为 `full`，保持完整工具集兼容：注册现有 17 个 `chat_*`、29 个 `chatgpt_*` 和 17 个 `gemini_*` 工具。可在该 MCP 连接的环境配置中显式设为 `unified`，重启连接后仅注册这 17 个 `chat_*` 工具，不注册平台专属工具。尚未由统一工具替代的旧专属上传、诊断等功能在 `unified` 下不可通过这些旧工具调用；此模式不代表旧功能均已有统一替代。
+
+两种模式的 `request_id` 去重、`task_id` 恢复读取及 `session_id` 会话绑定规则不变；`tools/list` 不启动浏览器。升级不会替用户启用 `unified`，也不修改用户全局配置。[.env.example](.env.example) 只示例默认 `full`；项目不自动读取 `.env`，请通过 MCP 客户端环境配置注入变量。
 
 - `CHATGPT_WEB_CHROME`：浏览器可执行文件绝对路径
 - `CHATGPT_WEB_PROFILE`：专用浏览器配置目录

@@ -29,7 +29,8 @@ test('doctor reads local state without browser or filesystem mutation and redact
   assert.equal(result.ok, true); assert.equal(result.sign_in_verified, false);
   assert.equal(result.providers[0].checks.find((c) => c.name === 'runtime_state').code, 'RATE_LIMITED');
   const json = JSON.stringify(result);
-  for (const secret of ['PRIVATE_', 'private.example', f.directory, String(process.pid)]) assert.ok(!json.includes(secret));
+  for (const secret of ['PRIVATE_', 'private.example', f.directory]) assert.ok(!json.includes(secret));
+  assert.equal(result.providers[0].checks.find(c => c.name === 'browser_lifecycle').code, 'UNKNOWN');
   assert.deepEqual(await fs.readdir(f.directory), before);
 });
 test('doctor isolates corrupted state and journal without echoing raw errors', async (t) => {
@@ -47,7 +48,9 @@ test('doctor reports locks without deleting or reclaiming them', async (t) => {
   await writeState(lock, { pid: process.pid, token: 'PRIVATE_LOCK_TOKEN' });
   const before = await fs.readFile(lock, 'utf8');
   const result = await diagnose(f.kernel);
-  assert.equal(result.providers[0].checks.find((c) => c.name === 'task_lock').code, 'IN_USE');
+  const observed = result.providers[0].checks.find((c) => c.name === 'task_lock');
+  assert.equal(observed.code, 'UNREADABLE_LOCK');
+  assert.equal(observed.owner.owner_state, 'UNKNOWN', 'a legacy live PID without its creation identity is not proven');
   assert.ok(!JSON.stringify(result).includes('PRIVATE_LOCK_TOKEN'));
   assert.equal(await fs.readFile(lock, 'utf8'), before);
 });

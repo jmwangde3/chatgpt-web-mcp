@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-17",
+  "scope": "Real ChatGPT two-batch functional review; synthetic source only",
+  "per_batch_character_budget": 10000,
+  "total_source_chars": 15198,
+  "files": [
+    {
+      "path": "rates_a.py",
+      "sha256": "3b85ce1e3abe758c9b82e01177278d2f2b07bd5996921eeeec888a9d449b80c5",
+      "chars": 7311,
+      "lineCount": 283
+    },
+    {
+      "path": "pricing.py",
+      "sha256": "f92acee80fc0fcdc5d36ec80ba25a39b0ae992bbc852fd9ad436e3067993aaf9",
+      "chars": 219,
+      "lineCount": 10
+    },
+    {
+      "path": "rates_b.py",
+      "sha256": "dbd1d5c259f6f9c3a7cd62588e7011c883170dd86b6b34031050de050f40d6f1",
+      "chars": 7312,
+      "lineCount": 283
+    },
+    {
+      "path": "test_pricing.py",
+      "sha256": "08195a8bc170d0ab96ac7f89524719040d2b2f5fde347f92fedcc3f64fb519d4",
+      "chars": 356,
+      "lineCount": 13
+    }
+  ],
+  "tests": {
+    "exit": 0,
+    "count": 3
+  },
+  "expected_cross_catalogue": {
+    "a": 4083,
+    "b": 7358,
+    "sum": 11441
+  },
+  "batch1": {
+    "request_id": "collab-v2-batch1-20261117-1",
+    "prompt_chars": 8028,
+    "task_id": "chatgpt:8a6151b5-1d3a-476e-bbec-76f66bd3c565",
+    "initial_state": "uncertain",
+    "initial_error": "SEND_UNCONFIRMED",
+    "recovery": "Same original task read via worktree MCP; no resend, no journal override",
+    "state": "completed",
+    "response": {
+      "text": "Batch 1/2 已接收 验收 INCOMPLETE\n\n文件\n\n\t\n\n已接收版本 SHA-256\n\n\t\n\n状态\n\n\n\n\nrates_a.py\n\n\t\n\n3b85ce1e3abe758c9b82e01177278d2f2b07bd5996921eeeec888a9d449b80c5\n\n\t\n\n已收到\n\n\n\n\npricing.py\n\n\t\n\nf92acee80fc0fcdc5d36ec80ba25a39b0ae992bbc852fd9ad436e3067993aaf9\n\n\t\n\n已收到\n\n当前覆盖缺口：\n\nrates_b.py：尚未提供。\n\ntest_pricing.py：尚未提供。\n\n当前验收状态：\n\n已接收 2 个文件及其声明的版本哈希。\n\n哈希尚未独立计算核验。\n\n尚未进行代码审查或测试。\n\n不作 PASS / FAIL 最终判定。\n\n请继续发送 Batch 2/2。收到两个剩余文件后，再进行完整审查。",
+      "format": "plain_text",
+      "complete": true,
+      "model": null,
+      "url": "https://chatgpt.com/c/6afb4f20-ad30-83ea-b106-a5197ccc5481"
+    }
+  },
+  "batch2": {
+    "request_id": "collab-v2-batch2-20261117-1",
+    "prompt_chars": 8185,
+    "task_id": "chatgpt:0c44d60c-c27b-48a0-b508-622e0d2d696a",
+    "state": "completed",
+    "submitted_at": 1794855357452,
+    "completed_at": 1794855471672,
+    "response": {
+      "text": "PASS 最终功能审查通过（基于四份完整源码的静态审查）\n\n1. 四文件及版本记录\n\n文件\n\n\t\n\n声明 SHA-256\n\n\n\n\nrates_a.py\n\n\t\n\n3b85ce1e3abe758c9b82e01177278d2f2b07bd5996921eeeec888a9d449b80c5\n\n\n\n\npricing.py\n\n\t\n\nf92acee80fc0fcdc5d36ec80ba25a39b0ae992bbc852fd9ad436e3067993aaf9\n\n\n\n\nrates_b.py\n\n\t\n\ndbd1d5c259f6f9c3a7cd62588e7011c883170dd86b6b34031050de050f40d6f1\n\n\n\n\ntest_pricing.py\n\n\t\n\n08195a8bc170d0ab96ac7f89524719040d2b2f5fde347f92fedcc3f64fb519d4\n\n以上均为用户提供的声明哈希，未独立计算或核验。\n\n两个目录版本：\n\nCATALOG_A_VERSION = \"batch-a-8658dc58b487\"\n\nCATALOG_B_VERSION = \"batch-b-69f2aa76a991\"\n\n两个目录各包含 280 个区域条目，编号范围均为 000–279。\n\n2. 指定数据及求和\n\n项目\n\n\t\n\n数值\n\n\n\n\nA_region_243\n\n\t\n\n4,083\n\n\n\n\nB_region_187\n\n\t\n\n7,358\n\n\n\n\nquote() 合计\n\n\t\n\n11,441\n\n计算：\n\n4083\n+\n7358\n=\n11441\n4083+7358=\n11441\n\t​\n\n\n与 test_cross_catalogs 的预期值一致。\n\n3. 跨文件行为审查\n\n审查项目\n\n\t\n\n结果\n\n\t\n\n说明\n\n\n\n\n双目录导入\n\n\t\n\nPASS\n\n\t\n\n正确导入 RATES_A、RATES_B\n\n\n\n\nA 目录查找\n\n\t\n\nPASS\n\n\t\n\n优先查询 RATES_A\n\n\n\n\nB 目录查找\n\n\t\n\nPASS\n\n\t\n\nA 未命中时查询 RATES_B\n\n\n\n\n跨目录求和\n\n\t\n\nPASS\n\n\t\n\n两个目录的数据可以共同参与求和\n\n\n\n\n空输入\n\n\t\n\nPASS\n\n\t\n\nsum() 返回 0\n\n\n\n\n未知代码\n\n\t\n\nPASS\n\n\t\n\n字典访问自然抛出 KeyError\n\n\n\n\n重复代码\n\n\t\n\nPASS\n\n\t\n\n按出现次数重复计价，符合当前求和逻辑\n\n特别检查：\n\nA、B 使用不同的键名前缀，不存在当前数据中的键名冲突。\n\n未知代码不会被静默当作 0。\n\nquote() 使用生成器逐项调用 lookup()，不需要预先构建中间列表。\n\n两个目录的版本常量存在，但当前定价函数不使用版本号进行运行时校验；不构成当前功能缺陷。\n\n4. 测试与覆盖限制\n\n你提供的本机测试结果：\n\n3/3 PASS\n\n跨目录求和。\n\n空输入。\n\n未知代码抛出 KeyError。\n\n说明：这是你提供的测试执行结果，不是我独立运行的结果。\n\n尚未覆盖的边界：\n\n560 个区域条目的逐项自动化校验。\n\n重复输入的专门断言。\n\n非法输入类型、不可哈希对象。\n\n目录数据与版本号之间的自动一致性校验。\n\n5. 最终判定\n\n最终状态\n\nPASS\n\n四份必要源码均已收到。\n\n两批内容完整衔接。\n\n跨目录查找与求和逻辑正确。\n\n空输入与未知代码处理正确。\n\n指定合计 11,441 正确。\n\n没有发现需要修复的功能性缺陷。\n\n验收边界： 本结论针对本次提供的合成 fixture 和当前功能范围，不代表独立哈希验证、独立测试执行或生产环境验收。此次属于每批不超过 10,000 字符预算的功能性分批验收，不是模型上下文极限压力测试。\n\n结论：当前版本无需修改，可以通过本轮功能验收。",
+      "format": "plain_text",
+      "complete": true,
+      "model": null,
+      "url": "https://chatgpt.com/c/6afb4f20-ad30-83ea-b106-a5197ccc5481"
+    }
+  },
+  "limitations": [
+    "15198 source characters at a configured 10000 character packet budget; not a model maximum-context stress test",
+    "Declared file hashes not independently computed by the Web model"
+  ],
+  "result": "PASS within declared functional batching scope",
+  "post_review_disk_verification": [
+    {
+      "path": "rates_a.py",
+      "matches_declared_file_bytes": true
+    },
+    {
+      "path": "pricing.py",
+      "matches_declared_file_bytes": true
+    },
+    {
+      "path": "rates_b.py",
+      "matches_declared_file_bytes": true
+    },
+    {
+      "path": "test_pricing.py",
+      "matches_declared_file_bytes": true
+    }
+  ],
+  "hash_scope": "SHA-256 of on-disk UTF-8 file bytes (CRLF); pasted source normalized to LF"
+}

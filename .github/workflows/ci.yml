@@ -23,10 +23,18 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run smoke
+      - run: npm run smoke
+        env:
+          CHATGPT_WEB_MCP_TOOLSET: unified
       - run: npm pack --dry-run
+      - run: npm run verify:package
 
   offline-browser-tests:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -35,4 +43,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright-core install --with-deps chromium
+        if: runner.os == 'Linux'
+      - run: npx playwright-core install chromium
+        if: runner.os == 'Windows'
       - run: npm run test:browser

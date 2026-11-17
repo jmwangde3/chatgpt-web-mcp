@@ -1,0 +1,20 @@
+[
+  {
+    "file": "average.py",
+    "githubInitialSha256": "8f9a40545749e3565b423231f017428b9cc6db15ce9f3a207dfbcff40601928f",
+    "githubFinalSha256": "9633cacb4b7aa0f084bb741501413777a3eb27aab4bec2c0b73479bb9b7490a5",
+    "localFinalSha256": "bea340923f74f73d5ad92a4a7009f802602bccb45c717cc7aa6dbfcb1f4b357a",
+    "finalIdenticalBytes": false,
+    "finalNormalizedTextMatches": true,
+    "initialNormalizedTextMatches": true
+  },
+  {
+    "file": "test_average.py",
+    "githubInitialSha256": "eb6e485d32d99d7e0fd18a13696f221384d9dddcf1c8052d1e2bdc287d876346",
+    "githubFinalSha256": "a93348a072b2b8fb687021f4d1acfb56c5f44c78b2a079974dfa132cb62bacfd",
+    "localFinalSha256": "a7a9c59e1177f6d8e1238cddcb83e162fd915c06465390583f2223bc21b1ac5b",
+    "finalIdenticalBytes": false,
+    "finalNormalizedTextMatches": true,
+    "initialNormalizedTextMatches": true
+  }
+]

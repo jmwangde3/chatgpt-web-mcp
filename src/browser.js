@@ -1,9 +1,12 @@
+import { guardedSend, bootstrapSendGuard } from './shared/send-guard.js';
+import { verifyDataPaths } from './shared/data-security.js';
 import { answerTierControlDOM } from './shared/composer-controls.js';
 import fs from "node:fs/promises";
 import path from "node:path";
+import os from 'node:os';
 import { AsyncLocalStorage } from "node:async_hooks";
 import { sessionPage, sessionView, mergeSessionView, validateSessionId } from './shared/sessions.js';
-import { WebUIError, PersistentBrowser, acquireLock } from './shared/persistent-browser.js';
+import { WebUIError, PersistentBrowser, acquireLock, writeState } from './shared/persistent-browser.js';
 import { controlRequest } from './shared/control.js';
 import { textHash, matchesUserPrompt } from './shared/user-message-identity.js';
 
@@ -119,6 +122,7 @@ export function readUserMessageDOMText(element) {
 // Renderer-side only: return at most one conservative reconstruction from the
 // same user node as the plain text. Never infer markup from ordinary text.
 export function readUserMessageIdentityDOM(element, selectors) {
+  const identity = (() => {
   const nodes = [...document.querySelectorAll(selectors)];
   const lastId = element.getAttribute('data-message-id') || element.closest('[data-chatgpt-search-message-ids]')?.getAttribute('data-chatgpt-search-message-ids')?.trim().split(/\s+/u)[0] || element.getAttribute('data-testid') || element.id || null;
   const rich = element.matches('.rich-text-user-turn') ? element : element.querySelector('.rich-text-user-turn');
@@ -142,6 +146,30 @@ export function readUserMessageIdentityDOM(element, selectors) {
     return node.getClientRects().length === 1 && style.visibility === 'visible' && style.display !== 'none' && Number(style.opacity) !== 0;
   });
   const plainFallback = element.innerText || element.textContent || '';
+  // Reconstruct one canonical fenced-code candidate only from explicit user
+  // code-block DOM. The full existing hash comparison remains unchanged.
+  const blockNodes = wrappersValid ? [...leaf.childNodes] : [];
+  const blocks = blockNodes.filter(node => node.nodeType === Node.ELEMENT_NODE);
+  const fenced = !rich && wrappersValid && plainFallback.length <= 100000 && blocks.length > 0 && blocks.length <= 32 &&
+    blockNodes.every(node => node.nodeType === Node.TEXT_NODE || (node.nodeType === Node.ELEMENT_NODE && node.tagName === 'PRE')) &&
+    blocks.every(pre => {
+      const code = pre.firstElementChild;
+      return pre.getAttribute('data-markdown-copy') === 'code-block' && visible(pre) &&
+        pre.children.length === 1 && code?.tagName === 'CODE' && !code.children.length && visible(code) &&
+        [...pre.childNodes].every(node => node === code || (node.nodeType === Node.TEXT_NODE && !node.textContent.trim())) &&
+        [...code.childNodes].every(node => node.nodeType === Node.TEXT_NODE) &&
+        code.getAttribute('data-markdown-copy-content') === 'true' &&
+        /^[A-Za-z0-9_+-]{1,32}$/.test(code.getAttribute('data-language') || '') &&
+        !!code.textContent && !code.textContent.includes('```');
+    });
+  if (fenced) {
+    const copy = leaf.cloneNode(true);
+    for (const pre of copy.querySelectorAll('pre')) {
+      const code = pre.firstElementChild;
+      pre.replaceWith(document.createTextNode('```' + code.getAttribute('data-language') + '\n' + code.textContent + '\n```'));
+    }
+    return {count:nodes.length, isLast:nodes.at(-1) === element, lastId, lastText:plainFallback, identityCandidates:[copy.textContent || '']};
+  }
   if (!structural && !flat) return {count:nodes.length, isLast:nodes.at(-1) === element, lastId, lastText:plainFallback, identityCandidates:[]};
   const copies = structural ? paragraphs.map(p => p.cloneNode(true)) : [leaf.cloneNode(true)];
   for (const copy of copies) {
@@ -158,6 +186,11 @@ export function readUserMessageIdentityDOM(element, selectors) {
   for (const code of codes) code.replaceWith(document.createTextNode('`' + code.textContent + '`'));
   const candidate = copies.map(p => p.textContent || '').join('\n\n');
   return {count:nodes.length, isLast:nodes.at(-1) === element, lastId, lastText:plain, identityCandidates:[candidate]};
+  })();
+  const directId = element.getAttribute('data-message-id');
+  const searchIds = element.closest('[data-chatgpt-search-message-ids]')?.getAttribute('data-chatgpt-search-message-ids')?.trim().split(/\s+/u).filter(Boolean) || [];
+  const stableLastId = directId || (new Set(searchIds).size === 1 ? searchIds[0] : null);
+  return { ...identity, stableLastId, lastHTML: element.outerHTML, url: location.href };
 }
 
 export function isProModel(value) {
@@ -650,10 +683,7 @@ async function readBrowserState() {
 }
 
 async function writeBrowserState(value) {
-  await fs.mkdir(path.dirname(BROWSER_STATE_FILE), { recursive: true });
-  await fs.writeFile(BROWSER_STATE_FILE, `${JSON.stringify(value, null, 2)}\n`, {
-    mode: 0o600,
-  });
+  await writeState(BROWSER_STATE_FILE, value);
 }
 
 async function readRawRuntimeState() {
@@ -668,42 +698,18 @@ async function readRuntimeState() {
   return sessionView(await readRawRuntimeState(), sessionContext.getStore(), SESSION_FIELDS);
 }
 
-async function withRuntimeState(update, { signal } = {}) {
-  await fs.mkdir(path.dirname(RUNTIME_STATE_FILE), { recursive: true });
-  const deadline = Date.now() + ACTION_TIMEOUT_MS;
-  let lock = null;
-  while (!lock && Date.now() < deadline) {
-    throwIfAborted(signal);
-    try {
-      lock = await fs.open(RUNTIME_LOCK_FILE, "wx", 0o600);
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      const stat = await fs.stat(RUNTIME_LOCK_FILE).catch(() => null);
-      if (stat && Date.now() - stat.mtimeMs > ACTION_TIMEOUT_MS) {
-        await fs.unlink(RUNTIME_LOCK_FILE).catch(() => {});
-        continue;
-      }
-      await waitWithAbort(50, signal);
-    }
-  }
-  if (!lock) {
-    throw new ChatGPTWebError("等待 ChatGPT MCP 的全局节流锁超时。", {
-      lock: RUNTIME_LOCK_FILE,
-    });
-  }
-
+export async function withRuntimeState(update, { signal } = {}) {
+  await verifyDataPaths({ runtimeState: RUNTIME_STATE_FILE });
+  const release = await acquireLock(RUNTIME_LOCK_FILE, { signal, timeout: ACTION_TIMEOUT_MS, operation: 'runtime-state' });
   try {
     const raw = await readRawRuntimeState();
     const state = sessionView(raw, sessionContext.getStore(), SESSION_FIELDS);
     const { state: nextState = state, result } = await update(state);
     const merged = mergeSessionView(raw, nextState, sessionContext.getStore(), SESSION_FIELDS);
-    await fs.writeFile(RUNTIME_STATE_FILE, `${JSON.stringify(merged, null, 2)}\n`, {
-      mode: 0o600,
-    });
+    await writeState(RUNTIME_STATE_FILE, merged);
     return result;
   } finally {
-    await lock.close().catch(() => {});
-    await fs.unlink(RUNTIME_LOCK_FILE).catch(() => {});
+    await release();
   }
 }
 
@@ -714,9 +720,6 @@ async function waitForSiteAction(action, signal) {
       "ChatGPT 安全熔断已开启。不会执行新的网页操作；请先人工确认限流提示已经消失。",
       { circuitBreaker: initial.circuitBreaker, action },
     );
-  }
-  if (generationIsStale(initial)) {
-    initial = await clearStaleActiveGeneration(initial);
   }
   if (initial.activeGeneration?.active) {
     throw new ChatGPTWebError(
@@ -745,13 +748,6 @@ async function waitForSiteAction(action, signal) {
         "等待期间 ChatGPT 安全熔断已开启，当前网页操作已取消。",
         { circuitBreaker: state.circuitBreaker, action },
       );
-    }
-    if (generationIsStale(state)) {
-      state = {
-        ...state,
-        activeGeneration: null,
-        lastGenerationInterruptedAt: Date.now(),
-      };
     }
     if (state.activeGeneration?.active) {
       throw new ChatGPTWebError(
@@ -880,22 +876,17 @@ export function generationIsStale(runtime) {
   );
 }
 
-async function clearStaleActiveGeneration(runtime) {
-  if (!generationIsStale(runtime)) return runtime;
-  const interruptedAt = Date.now();
-  await updateRuntimeState({
-    activeGeneration: null,
-    lastGenerationInterruptedAt: interruptedAt,
-  });
-  return {
-    ...runtime,
-    activeGeneration: null,
-    lastGenerationInterruptedAt: interruptedAt,
-  };
+// Owner exit is diagnostic only. Completion requires evidence from the bound page.
+export function generationCompletionEvidence(runtime, { url, generating, responseCount, responseText }) {
+  const generation = runtime?.activeGeneration;
+  return Boolean(generation?.active && generation.url === url && !generating && String(responseText || '').trim() &&
+    (generation.assistantBefore == null ? responseCount > 0 : responseCount > Number(generation.assistantBefore) ||
+      String(responseText).trim() !== String(generation.baselineResponse || '').trim()));
 }
 
 async function acquireOperationLock(operation, signal) {
-  return acquireLock(OPERATION_LOCK_FILE, { signal, timeout: ACTION_TIMEOUT_MS });
+  await verifyDataPaths({ operationLock: OPERATION_LOCK_FILE });
+  return acquireLock(OPERATION_LOCK_FILE, { signal, timeout: ACTION_TIMEOUT_MS, operation });
 }
 
 export function rankTextMatch(items, query, getText = (item) => item) {
@@ -923,9 +914,11 @@ export function parseAdvancedRowValue(text, labels) {
 }
 
 export class ChatGPTBrowser {
+  messageIdentityVersion = 1;
   constructor({ sessionId } = {}) { this.sessionId = validateSessionId(sessionId); }
   #runtime = new PersistentBrowser({
-    browserState: BROWSER_STATE_FILE, profile: USER_DATA_DIR,
+    browserState: BROWSER_STATE_FILE, profile: USER_DATA_DIR, runtimeState: RUNTIME_STATE_FILE, operationLock: OPERATION_LOCK_FILE,
+    taskLock: path.join(process.env.WEB_CHAT_DATA_DIR || path.join(os.homedir(), '.web-chat-mcp'), 'chatgpt', 'tasks.json.lock'),
     executable: CHROME_EXECUTABLE, url: CHATGPT_URL, headless: HEADLESS,
     actionTimeout: ACTION_TIMEOUT_MS, launchArgs: ['--start-maximized', '--new-window'],
   });
@@ -976,10 +969,44 @@ export class ChatGPTBrowser {
     }
   }
 
-  async settleManagedGeneration() {
-    const stop = await this.firstVisible(SELECTORS.stopButton, { timeout: 100 });
-    if (stop) throw new ChatGPTWebError("回答仍在生成，不能解除任务状态。");
-    await updateRuntimeState({ activeGeneration: null, lastGenerationCompletedAt: Date.now() });
+  async settleManagedGeneration(expected, { allowIdle = false } = {}) {
+    if (expected?.userMessageId) {
+      const snapshot = await this.verifyTaskMessage(expected);
+      if (snapshot.generating || (!allowIdle && !snapshot.response)) throw new WebUIError('GENERATION_UNCONFIRMED', 'The original response is not idle.');
+      const active = snapshot.activeGeneration;
+      if (!active?.active) return;
+      if (active.userMessageId !== expected.userMessageId || (expected.managedTaskId && active.managedTaskId !== expected.managedTaskId)) {
+        throw new WebUIError('TASK_IDENTITY_CHANGED', 'The original generation identity changed.');
+      }
+      await withRuntimeState(async state => {
+        if (state.activeGeneration?.startedAt !== active.startedAt || state.activeGeneration?.userMessageId !== expected.userMessageId) throw new WebUIError('TASK_IDENTITY_CHANGED', 'The generation changed before settling.');
+        return { state: { ...state, activeGeneration: null, lastGenerationCompletedAt: Date.now() } };
+      });
+      return;
+    }
+    // Check before getLatestResponse, which can itself clear completed state.
+    const page = await this.page();
+    const identity = await page.evaluate(`(() => { const selectors = ${JSON.stringify(SELECTORS.userMessages.join(','))}; const nodes = [...document.querySelectorAll(selectors)]; const identity = nodes.length ? (${readUserMessageIdentityDOM.toString()})(nodes.at(-1), selectors) : { url: location.href, count: 0, isLast: true, lastText: '', identityCandidates: [] }; return { ...identity, responseCount: document.querySelectorAll(${JSON.stringify(SELECTORS.assistantMessages.join(','))}).length }; })()`);
+    if (!expected || !identity.isLast || identity.url !== expected.url || identity.count !== expected.userCount ||
+        !matchesUserPrompt(expected.baselineOnly ? expected.baselineHash : expected.promptHash, identity.lastText, expected.baselineOnly ? [] : identity.identityCandidates) ||
+        (expected.baselineOnly && identity.responseCount !== expected.responseCount)) {
+      throw new ChatGPTWebError('Original task identity changed; generation state was preserved.');
+    }
+    const snapshot = await this.getLatestResponse({ includeTranscript: false, includeIdentityCandidates: true });
+    const baseline = expected?.baselineOnly === true;
+    if (!expected || (snapshot.userMessageCount > 0 && snapshot.identitySnapshotValid === false) || snapshot.url !== expected.url ||
+        snapshot.userMessageCount !== expected.userCount ||
+        !matchesUserPrompt(baseline ? expected.baselineHash : expected.promptHash, snapshot.lastUserMessage || '', baseline ? [] : snapshot.identityCandidates) ||
+        (baseline && snapshot.assistantMessageCount !== expected.responseCount)) {
+      throw new ChatGPTWebError('Original task identity changed; generation state was preserved.');
+    }
+    if (snapshot.generating) throw new ChatGPTWebError("回答仍在生成，不能解除任务状态。");
+    if (snapshot.activeGeneration?.active) {
+      if (snapshot.activeGeneration.url !== snapshot.url || (!allowIdle && !generationCompletionEvidence({ activeGeneration: snapshot.activeGeneration }, {
+        url: snapshot.url, generating: snapshot.generating, responseCount: snapshot.assistantMessageCount, responseText: snapshot.response,
+      }))) throw new ChatGPTWebError('Original generation completion remains unverified.');
+      await updateRuntimeState({ activeGeneration: null, lastGenerationInterruptedAt: Date.now() });
+    }
   }
 
   async close({ terminateBrowser = false } = {}) {
@@ -1078,10 +1105,6 @@ export class ChatGPTBrowser {
         "ChatGPT 安全熔断已开启。不会执行新的网页操作；请先人工确认限流提示已经消失。",
         { circuitBreaker: state.circuitBreaker, action },
       );
-    }
-    if (generationIsStale(state)) {
-      state = await clearStaleActiveGeneration(state);
-      return { allowed: true, staleGenerationCleared: true };
     }
     if (state.activeGeneration?.active) {
       throw new ChatGPTWebError(
@@ -1271,6 +1294,7 @@ export class ChatGPTBrowser {
         await this.siteAction('launch-chatgpt');
       }
       this.#context = await this.#runtime.connect(this.signal());
+      await this.#context.addInitScript(bootstrapSendGuard);
       openedChatGPTPage = this.#runtime.launched;
       if (openedChatGPTPage) await updateRuntimeState({ authenticatedUntil: 0 });
     } catch (error) {
@@ -1321,8 +1345,11 @@ export class ChatGPTBrowser {
   async browserLifecycle() {
     const state = await readBrowserState();
     const runtime = await readRuntimeState();
-    const browserRunning = processIsAlive(Number(state?.pid));
+    const lifecycle = await this.#runtime.lifecycle();
+    const browserRunning = ['PROCESS_MATCHED','CDP_REACHABLE','PROCESS_MATCHED_NO_CDP'].includes(lifecycle.status) || (lifecycle.status !== 'NOT_RUNNING' && processIsAlive(Number(state?.pid)));
     return {
+      controller: await this.#runtime.controlDiagnostics(),
+      lifecycle,
       persistent: true,
       browserRunning,
       reconnectDelayMs: RECONNECT_DELAY_MS,
@@ -1353,6 +1380,8 @@ export class ChatGPTBrowser {
       postBreakerCooldownPending: Boolean(runtime.postBreakerCooldownPending),
     };
   }
+
+  controllerDiagnostics() { return this.#runtime.controlDiagnostics(); }
 
   async terminateBrowser() {
     const state = await readBrowserState();
@@ -3517,7 +3546,7 @@ export class ChatGPTBrowser {
     const last = users.last();
     if (includeIdentityCandidates) {
       const data = await last.evaluate(readUserMessageIdentityDOM, SELECTORS.userMessages.join(', '));
-      return { count: data.count, lastText: data.isLast ? data.lastText : '', lastId: data.lastId, identityCandidates: data.isLast ? data.identityCandidates : [] };
+      return { count: data.count, lastText: data.isLast ? data.lastText : '', lastId: data.lastId, stableLastId: data.isLast ? data.stableLastId : null, lastHTML: data.lastHTML, url: data.url, identityCandidates: data.isLast ? data.identityCandidates : [] };
     }
     const detail = await last.evaluate((element) => ({
       text: element.innerText || element.textContent || "",
@@ -3529,6 +3558,20 @@ export class ChatGPTBrowser {
         null,
     }));
     return { count, lastText: await last.evaluate(readUserMessageDOMText), lastId: detail.lastId };
+  }
+
+  async verifyTaskMessage(expected) {
+    const snapshot = await this.getLatestResponse({ includeTranscript: false, includeIdentityCandidates: true, skipGenerationRelease: true });
+    if (!expected?.userMessageId || snapshot.url !== expected.url || snapshot.lastUserMessageId !== expected.userMessageId ||
+        !snapshot.identitySnapshotValid || !matchesUserPrompt(expected.promptHash, snapshot.lastUserMessage || '', snapshot.identityCandidates)) {
+      throw new WebUIError('TASK_IDENTITY_CHANGED', 'The last user message is no longer the original task.');
+    }
+    return snapshot;
+  }
+
+  async prepareTaskStop(expected) {
+    const snapshot = await this.verifyTaskMessage(expected);
+    return { ...expected, userCount: snapshot.userMessageCount };
   }
 
   async conversationTurnStats() {
@@ -3637,7 +3680,7 @@ export class ChatGPTBrowser {
     };
   }
 
-  async clickSendButton({ timeoutMs = ACTION_TIMEOUT_MS } = {}) {
+  async clickSendButton({ timeoutMs = ACTION_TIMEOUT_MS, guard } = {}) {
     const page = await this.page();
     const deadline = Date.now() + timeoutMs;
     // File chips can be visible while upload processing still disables Send.
@@ -3649,13 +3692,16 @@ export class ChatGPTBrowser {
         if (await send.isVisible().catch(() => false) && await send.isEnabled().catch(() => false)) {
           throwIfAborted(this.signal?.());
           // A failed/ambiguous click must escape this loop, never trigger a retry.
-          await this.click(send, 'send-prompt-click');
+          if (guard) await guardedSend({ page, button: send, ...guard, click: target => this.click(target, 'send-prompt-click') });
+          else await this.click(send, 'send-prompt-click');
           return;
         }
       }
       await waitWithAbort(Math.min(100, Math.max(0, deadline - Date.now())), this.signal?.());
     } while (Date.now() < deadline);
-    throw new ChatGPTWebError('没有可用的发送按钮；草稿已保留，未尝试 Enter 或再次发送。', { code: 'SEND_CONTROL_UNAVAILABLE' });
+    const error = new ChatGPTWebError('没有可用的发送按钮；草稿已保留，未尝试 Enter 或再次发送。', { code: 'SEND_CONTROL_UNAVAILABLE' });
+    if (guard) Object.assign(error, { code: 'SEND_NOT_ATTEMPTED', sendOutcome: 'not_attempted' });
+    throw error;
   }
 
   async submitPrompt({
@@ -3663,6 +3709,9 @@ export class ChatGPTBrowser {
     timeoutMs = RESPONSE_TIMEOUT_MS,
     refresh = true,
     beforeSubmit,
+    baseline,
+    managedTaskId,
+    onIdentityConfirmed,
   } = {}) {
     const refreshResult = refresh
       ? await this.refreshBeforeSend({ reason: "submit-prompt" })
@@ -3677,17 +3726,29 @@ export class ChatGPTBrowser {
     if (!composer) throw new ChatGPTWebError("没有找到提示词输入框。");
     await this.assertComposerWritable("submit-prompt", composer);
     const promptText = await this.composerText(composer);
+    const exactDraft = await composer.evaluate(node => ('value' in node ? node.value : node.innerText ?? node.textContent ?? ''));
+    const expectedURL = page.url();
     if (!normalize(promptText)) throw new ChatGPTWebError("输入框为空，无法发送。");
 
     const assistantBefore = await this.assistantLocator().count();
     const assistantBeforeText = assistantBefore
       ? await this.assistantLocator().last().innerText().catch(() => "")
       : "";
-    const userBeforeSnapshot = await this.userMessageSnapshot();
+    const userBeforeSnapshot = await this.userMessageSnapshot({ includeIdentityCandidates: true });
     const userBefore = userBeforeSnapshot.count;
+    if ((userBefore && !userBeforeSnapshot.stableLastId) || (baseline && baseline.userMessageId !== userBeforeSnapshot.stableLastId && !(userBefore === 0 && !baseline.userMessageId))) {
+      throw Object.assign(new WebUIError('SEND_NOT_ATTEMPTED', 'The baseline user message changed; the draft was preserved.'), { sendOutcome: 'not_attempted' });
+    }
+    const assistantBeforeLocator = assistantBefore ? this.assistantLocator().last() : null;
+    const assistantBeforeId = typeof assistantBeforeLocator?.evaluate === 'function' ? await assistantBeforeLocator.evaluate(element => {
+      const direct = element.getAttribute('data-message-id');
+      const ids = element.closest('[data-chatgpt-search-message-ids]')?.getAttribute('data-chatgpt-search-message-ids')?.trim().split(/\s+/u).filter(Boolean) || [];
+      return direct || (new Set(ids).size === 1 ? ids[0] : null);
+    }).catch(() => null) : null;
     await this.siteAction("send-prompt");
     await beforeSubmit?.();
-    await this.clickSendButton();
+    await this.clickSendButton({ guard: { composer, expectedText: exactDraft, expectedURL, allowedOrigin: new URL(CHATGPT_URL).origin,
+      baselineUser: { selectors: SELECTORS.userMessages.join(', '), count: userBefore, lastId: userBeforeSnapshot.stableLastId || null, lastHTML: userBeforeSnapshot.lastHTML || null } } });
     await this.markSendPerformed();
 
     const generationStartedAt = Date.now();
@@ -3698,17 +3759,25 @@ export class ChatGPTBrowser {
         url: page.url(),
         ownerPid: process.pid,
         assistantBefore,
+        assistantBeforeId,
+        messageIdentityVersion: 1,
+        managedTaskId: managedTaskId || null,
+        userMessageId: null,
+        userCount: userBefore + 1,
+        promptHash: textHash(promptText),
         baselineResponse: assistantBeforeText,
         status: wait ? "waiting" : "unobserved",
       },
     });
 
     await page.waitForFunction(
-      ({ selectors, count }) => {
+      ({ selectors, count, lastId }) => {
         const elements = document.querySelectorAll(selectors);
-        return elements.length > count;
+        const last = [...elements].at(-1);
+        const id = last?.getAttribute('data-message-id') || last?.closest('[data-chatgpt-search-message-ids]')?.getAttribute('data-chatgpt-search-message-ids')?.trim().split(/\s+/u)[0];
+        return elements.length > count || Boolean(lastId && id && id !== lastId);
       },
-      { selectors: SELECTORS.userMessages.join(", "), count: userBefore },
+      { selectors: SELECTORS.userMessages.join(", "), count: userBefore, lastId: userBeforeSnapshot.stableLastId },
       { timeout: ACTION_TIMEOUT_MS },
     ).catch(() => {});
 
@@ -3740,13 +3809,21 @@ export class ChatGPTBrowser {
       );
     }
 
-    if (!userMessageAppendVerified || !matchesUserPrompt(textHash(promptText), userAfterSnapshot.lastText, userAfterSnapshot.identityCandidates)) {
+    if (!userMessageAppendVerified || !userAfterSnapshot.stableLastId || userAfterSnapshot.stableLastId === userBeforeSnapshot.stableLastId || !matchesUserPrompt(textHash(promptText), userAfterSnapshot.lastText, userAfterSnapshot.identityCandidates)) {
       const error = new ChatGPTWebError('发送后未确认新增的用户消息；已保留任务，请检查原页面，不要自动重发。', {
         code: 'SEND_UNCONFIRMED', userMessageCountBefore: userBefore, userMessageCountAfter: userAfterSnapshot.count,
       });
       error.code = 'SEND_UNCONFIRMED';
       throw error;
     }
+
+    const submittedURL = await this.waitForConversationURL();
+    await withRuntimeState(async state => ({ state: { ...state, activeGeneration:
+      state.activeGeneration?.startedAt === generationStartedAt && state.activeGeneration.ownerPid === process.pid
+        ? { ...state.activeGeneration, url: submittedURL, userMessageId: userAfterSnapshot.stableLastId, userCount: userAfterSnapshot.count } : state.activeGeneration } }));
+    await onIdentityConfirmed?.({ url: submittedURL, userMessageId: userAfterSnapshot.stableLastId,
+      lastUser: userAfterSnapshot.lastText, identityCandidates: userAfterSnapshot.identityCandidates,
+      mountedUserCount: userAfterSnapshot.count });
 
     if (!wait) {
       return {
@@ -3755,6 +3832,7 @@ export class ChatGPTBrowser {
         url: page.url(),
         conversationId: conversationIdFromUrl(page.url()),
         userMessageAppendVerified,
+        userMessageId: userAfterSnapshot.stableLastId,
         userMessageCountBefore: userBeforeSnapshot.count,
         userMessageCountAfter: userAfterSnapshot.count,
         pageRefreshedBeforeSend: Boolean(refreshResult),
@@ -3788,6 +3866,8 @@ export class ChatGPTBrowser {
             url: page.url(),
             ownerPid: null,
             assistantBefore,
+            userCount: userBefore + 1,
+            promptHash: textHash(promptText),
             baselineResponse: assistantBeforeText,
             status: "client-cancelled-generation-may-continue",
           },
@@ -3798,12 +3878,8 @@ export class ChatGPTBrowser {
         // an active generation; getLatestResponse can then clear it once the
         // final text is observable. This check does not fetch history.
         const latest = await this.getLatestResponse({ includeTranscript: false }).catch(() => null);
-        if (latest && !latest.generating) {
-          await updateRuntimeState({
-            activeGeneration: null,
-            lastGenerationInterruptedAt: Date.now(),
-          });
-        }
+        // Only verified completion in getLatestResponse may settle generation.
+        void latest;
       }
       throw error;
     }
@@ -4487,8 +4563,12 @@ export class ChatGPTBrowser {
     };
   }
 
-  async getLatestResponse({ includeSettings = false, includeTranscript = true, includeIdentityCandidates = false } = {}) {
+  async getLatestResponse({ includeSettings = false, includeTranscript = true, includeIdentityCandidates = false, skipGenerationRelease = false } = {}) {
     const page = await this.page();
+    const runtime = await readRuntimeState();
+    if (runtime.activeGeneration?.active && runtime.activeGeneration.url !== page.url()) {
+      throw new WebUIError('GENERATION_CONVERSATION_MISMATCH', 'Return to the original generation conversation; its state was preserved.');
+    }
     const body = await page.locator("body").innerText().catch(() => "");
     const rateLimit = classifyRateLimitText(body);
     const lengthLimit = classifyConversationLengthText(body);
@@ -4497,36 +4577,41 @@ export class ChatGPTBrowser {
     const user = this.userLocator();
     const renderedAssistantCount = await this.controlRead(assistant.count());
     const renderedUserCount = await this.controlRead(user.count());
-    const runtime = await readRuntimeState();
     const stop = await this.firstVisible(SELECTORS.stopButton, { timeout: 100 });
     const lastAssistant = renderedAssistantCount ? assistant.last() : null;
     const lastAssistantText = lastAssistant
       ? await lastAssistant.innerText().catch(() => "")
       : "";
     const streaming = await this.assistantIsStreaming(lastAssistant);
+    const lastAssistantId = typeof lastAssistant?.evaluate === 'function' ? await lastAssistant.evaluate(element => {
+      const direct = element.getAttribute('data-message-id');
+      const ids = element.closest('[data-chatgpt-search-message-ids]')?.getAttribute('data-chatgpt-search-message-ids')?.trim().split(/\s+/u).filter(Boolean) || [];
+      return direct || (new Set(ids).size === 1 ? ids[0] : null);
+    }).catch(() => null) : null;
+    const snapshotURL = page.url();
+    const identitySnapshot = (includeIdentityCandidates || runtime.activeGeneration?.active) && renderedUserCount
+      ? await this.userMessageSnapshot({ includeIdentityCandidates: true }) : null;
+    const identityValid = Boolean(identitySnapshot && identitySnapshot.count === renderedUserCount && snapshotURL === page.url() && identitySnapshot.lastText);
     // A completed response can leave an empty assistant placeholder after
     // streaming finishes. Preserve the PR's node-count/change completion rule.
-    const generationComplete = Boolean(
-      runtime.activeGeneration?.active &&
-        !stop &&
-        !streaming &&
-        (runtime.activeGeneration.assistantBefore == null
-          ? renderedAssistantCount > 0
-          : renderedAssistantCount > Number(runtime.activeGeneration.assistantBefore) ||
-            lastAssistantText.trim() !==
-              String(runtime.activeGeneration.baselineResponse || "").trim()),
-    );
-    const staleGeneration = generationIsStale(runtime);
-    if (generationComplete || staleGeneration) {
-      await updateRuntimeState({
-        activeGeneration: null,
-        ...(generationComplete
-          ? { lastGenerationCompletedAt: Date.now() }
-          : { lastGenerationInterruptedAt: Date.now() }),
+    const generationComplete = generationCompletionEvidence(runtime, {
+      url: page.url(), generating: Boolean(stop || streaming), responseCount: renderedAssistantCount, responseText: lastAssistantText,
+    }) || Boolean(runtime.activeGeneration?.userMessageId && lastAssistantId &&
+      lastAssistantId !== runtime.activeGeneration.assistantBeforeId && lastAssistantText && !stop && !streaming);
+    const ownerExited = generationIsStale(runtime);
+    let generationReleased = !skipGenerationRelease && generationComplete && identityValid &&
+      (runtime.activeGeneration.messageIdentityVersion === 1
+        ? Boolean(runtime.activeGeneration.userMessageId && runtime.activeGeneration.userMessageId === identitySnapshot.stableLastId)
+        : runtime.activeGeneration.userCount === identitySnapshot.count) &&
+      matchesUserPrompt(runtime.activeGeneration.promptHash, identitySnapshot.lastText, identitySnapshot.identityCandidates);
+    if (generationReleased) {
+      generationReleased = await withRuntimeState(async state => {
+        if (state.activeGeneration?.startedAt !== runtime.activeGeneration.startedAt || state.activeGeneration?.userMessageId !== runtime.activeGeneration.userMessageId) return { state, result: false };
+        return { state: { ...state, activeGeneration: null, lastGenerationCompletedAt: Date.now() }, result: true };
       });
     }
     const generationUnconfirmed =
-      runtime.activeGeneration?.active && !generationComplete && !staleGeneration;
+      runtime.activeGeneration?.active && !generationReleased;
     let settings = this.cachedSettings();
     let settingsWarning = null;
     if (includeSettings && !runtime.circuitBreaker?.active && !generationUnconfirmed) {
@@ -4542,9 +4627,6 @@ export class ChatGPTBrowser {
       : null;
     const userCount = transcript?.userMessageCount ?? renderedUserCount;
     const assistantCount = transcript?.assistantMessageCount ?? renderedAssistantCount;
-    const snapshotURL = page.url();
-    const identitySnapshot = includeIdentityCandidates && !transcript && renderedUserCount ? await this.userMessageSnapshot({ includeIdentityCandidates: true }) : null;
-    const identityValid = Boolean(identitySnapshot && identitySnapshot.count === renderedUserCount && snapshotURL === page.url() && identitySnapshot.lastText);
     const latestUserText = transcript
       ? transcript.messages.findLast((message) => message.author === "user")?.text.trim() || null
       : renderedUserCount
@@ -4567,13 +4649,16 @@ export class ChatGPTBrowser {
       url: page.url(),
       conversationId: conversationIdFromUrl(page.url()),
       lastUserMessage: latestUserText,
+      lastUserMessageId: identityValid ? identitySnapshot.stableLastId || null : null,
+      lastResponseMessageId: lastAssistantId,
       ...(includeIdentityCandidates ? { identityCandidates: identityValid ? identitySnapshot.identityCandidates : [], identitySnapshotValid: identityValid } : {}),
       userMessageCount: userCount,
       response: latestAssistantText,
       assistantMessageCount: assistantCount,
       generating: Boolean(stop || streaming),
       activeGeneration:
-        generationComplete || staleGeneration ? null : runtime.activeGeneration || null,
+        generationReleased ? null : runtime.activeGeneration || null,
+      generationOwnerExited: ownerExited,
       rateLimited: rateLimit.limited,
       rateLimitScope: rateLimit.scope,
       conversationTurnCount: conversationState.turnCount,

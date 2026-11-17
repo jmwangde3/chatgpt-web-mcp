@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-17",
+  "scope": "Actual Web probe for required missing file and nonexistent pinned SHA; synthetic public fixture only",
+  "task_id": "chatgpt:aa4f7067-8432-4c60-87d6-6a7387a3e001",
+  "session_id": "collab-v2-boundary-github-20261117",
+  "request_id": "collab-v2-boundary-missing-20261117-1",
+  "repository": "jmwangde3/chatgpt-collaboration-review-fixture",
+  "required_sha": "76eb2dc6b775bae3d1c73a58c0910a68498642d7",
+  "missing_required_path": "required_missing_context_v2.py",
+  "nonexistent_sha": "0000000000000000000000000000000000000001",
+  "submitted_at": 1794854607364,
+  "last_observed_state": "submitted",
+  "last_observed_at": 1794855295862,
+  "response": null,
+  "verdict": "NOT_VERIFIED",
+  "reason": "Initial 10 minute observation window expired. Extension question pending; no further active waiting without explicit answer.",
+  "side_effects": {"sends": 1, "resends": 0, "abandoned": false, "cancelled": false},
+  "limitations": ["No actual permission-denied private repository was used", "No fabricated INCOMPLETE or BLOCKED result is claimed"]
+}

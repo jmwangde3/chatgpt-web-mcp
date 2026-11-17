@@ -30,7 +30,7 @@ export function registerChatGPTTools(server, browser, kernel) {
   }
 
   function tool(name, description, schema, handler, { allowDuringPause = false } = {}) {
-    server.tool(name, description, schema, async (input, extra) => {
+    server.registerTool(name, { description, inputSchema: Object.keys(schema).length ? z.strictObject(schema) : schema }, async (input, extra) => {
       try {
         const result = await kernel.run("chatgpt",
           async () => {
@@ -196,7 +196,7 @@ export function registerChatGPTTools(server, browser, kernel) {
     "chatgpt_upload_files",
     "向当前 ChatGPT 对话上传用户明确授权的本地文件。路径必须是绝对路径。不会自动发送提示词。",
     {
-      files: z.array(z.string().min(1)).min(1).describe("待上传文件的绝对路径列表。"),
+      files: z.array(z.string().min(1)).min(1).max(10).describe("待上传文件的绝对路径列表。"),
     },
     ({ files }) => browser.uploadFiles(files),
   );
@@ -216,7 +216,7 @@ export function registerChatGPTTools(server, browser, kernel) {
     `组合工具：可新建或继续对话、选择模式/模型/思考强度/能力档位、切换临时对话、上传文件、写入提示词、发送并取得回答。继续已有对话时，发送前会强制刷新并检查 ${MAX_CONVERSATION_TURNS} 轮上限；达到上限或检测到网页 maximum-length 错误会先加载并归档完整 transcript（包括较早的懒加载历史）到 ${CONTEXT_ARCHIVE_DIR}，再自动新建普通对话，结果返回 conversationRotation/archivePath。刷新发生在上传和写入之前，避免旧页面状态覆盖用户消息。为保护用户草稿，若输入框已有不同内容会拒绝写入，不会覆盖；新建/切换对话前也会保护非空草稿。能力档位为“${PRO_ANSWER_TIER}”或模型名称带 Pro 时自动无限等待；普通档位仍使用 timeoutMs。只有用户明确要求上传时才传 files。`,
     {
       prompt: z.string().min(1),
-      files: z.array(z.string().min(1)).default([]),
+      files: z.array(z.string().min(1)).max(10).default([]),
       webSearch: z.boolean().default(false).describe("发送前启用并校验 ChatGPT 网页原生网页搜索。"),
       mode: z.string().min(1).optional(),
       model: z.string().min(1).optional(),
@@ -247,7 +247,7 @@ export function registerChatGPTTools(server, browser, kernel) {
     `普通请求新建非临时对话并使用页面可用档位“${DEFAULT_ANSWER_TIER}”。${probeInstructions} 浏览器始终常驻。`,
     {
       prompt: z.string().min(1).describe("最终正常对话要发送的实际提示词。"),
-      files: z.array(z.string().min(1)).default([]),
+      files: z.array(z.string().min(1)).max(10).default([]),
       webSearch: z.boolean().default(false).describe("发送前启用并校验 ChatGPT 网页原生网页搜索。"),
       requestPro: z.boolean().default(false).describe("兼容旧参数：true 请求实验性身份探针，并不保证选择 Pro；探针默认停用，此时 true 会在新建临时对话或发送探针前拒绝。"),
       forceProbe: z.boolean().default(false).describe("是否忽略会话级 Pro 探针缓存；仅在用户明确要求时设为 true。"),

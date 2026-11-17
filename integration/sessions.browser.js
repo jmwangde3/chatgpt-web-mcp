@@ -1,5 +1,6 @@
 // Offline only: real Chromium targets, all HTTP fulfilled locally.
 import test, { before, after } from 'node:test';
+import { browserTestTempRoot } from './helpers/temp-root.js';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
 import { geminiConfig } from '../src/gemini/config.js';
@@ -10,23 +11,28 @@ import os from 'node:os';
 import path from 'node:path';
 import { PersistentBrowser, readState, processAlive } from '../src/shared/persistent-browser.js';
 import { controlRequest } from '../src/shared/control.js';
+import { secureNewFixture, traceFixtureSecurity } from './private-fixture.js';
+import { bootstrapSendGuard } from '../src/shared/send-guard.js';
+import { verifyWindowsPaths, windowsQuery } from '../src/shared/windows-security.js';
 let chrome;
 before(async () => { chrome = await chromium.launch({ executablePath: geminiConfig().executable || chromium.executablePath(), headless: true }); });
 after(async () => { await chrome?.close(); });
 
 test('controller timeout and disconnect preserve the dedicated browser, tab and draft', async t => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'persistent-browser-fixture-'));
+  const directory = await fs.mkdtemp(path.join(browserTestTempRoot(), 'persistent-browser-fixture-'));
+  await secureNewFixture(directory);
   const runtime = new PersistentBrowser({
     profile: path.join(directory, 'profile'), browserState: path.join(directory, 'browser-state.json'),
     executable: geminiConfig().executable || chromium.executablePath(), url: 'about:blank', headless: true, actionTimeout: 10000,
     // Match Playwright's isolated fixture launch on Linux CI runners.
     launchArgs: process.platform === 'linux' ? ['--no-sandbox'] : [],
   });
+  traceFixtureSecurity(runtime, t);
   t.after(async () => {
     await runtime.terminate();
     await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
-  const context = await runtime.connect();
+  const context = await runtime.connect(null);
   const page = context.pages()[0];
   await page.setContent('<textarea>preserved draft</textarea>');
   const id = await targetId(context, page);
@@ -43,7 +49,11 @@ test('controller timeout and disconnect preserve the dedicated browser, tab and 
 });
 async function fixture(t) {
   const context = await chrome.newContext();
-  await context.route('**/*', route => route.fulfill({ body: '<html><body><textarea></textarea></body></html>', contentType: 'text/html' }));
+  await context.addInitScript(bootstrapSendGuard);
+  await context.route('**/*', route => route.fulfill({ body:
+    new URL(route.request().url()).origin === 'https://gemini.google.com'
+      ? '<html><body><input-area><rich-textarea><div contenteditable="true" role="textbox" style="white-space:pre-wrap"></div></rich-textarea><button aria-label="Send message">Send</button></input-area></body></html>'
+      : '<html><body><textarea></textarea></body></html>', contentType: 'text/html' }));
   t.after(() => context.close());
   let bindings = {};
   const bind = (sessionId, url = 'https://chatgpt.com/') => sessionPage(context, { sessionId, bindings, url, persist: async next => { bindings = next; } });
@@ -53,16 +63,18 @@ async function fixture(t) {
 for (const url of ['https://chatgpt.com/', 'https://gemini.google.com/app']) {
   test(`${url}: named tabs survive navigation and reconnect lookup, legacy draft is untouched`, async t => {
     const f = await fixture(t);
-    const legacy = await f.context.newPage(); await legacy.goto(url); await legacy.locator('textarea').fill('user draft');
+    const editor = page => page.locator('textarea, [contenteditable="true"][role="textbox"]');
+    const draft = page => editor(page).evaluate(e => e.value ?? e.innerText);
+    const legacy = await f.context.newPage(); await legacy.goto(url); await editor(legacy).fill('user draft');
     const a = await f.bind('a', url), b = await f.bind('b', url);
     assert.notEqual(a, b); assert.notEqual(a, legacy);
-    await a.locator('textarea').fill('answer A'); await b.locator('textarea').fill('answer B');
-    await b.goto(new URL('/c/completed-b', url).href);
+    await editor(a).fill('answer A'); await editor(b).fill('answer B');
+    await b.goto(new URL(url.includes('gemini.google.com') ? '/app/completed-b' : '/c/completed-b', url).href);
     // New calls rely only on persisted IDs, not a saved Page object or URL.
     assert.equal(await f.bind('a', url), a); assert.equal(await f.bind('b', url), b);
     assert.equal(await f.bind(undefined, url), legacy);
-    assert.equal(await legacy.locator('textarea').inputValue(), 'user draft');
-    assert.equal(await a.locator('textarea').inputValue(), 'answer A');
+    assert.equal(await draft(legacy), 'user draft');
+    assert.equal(await draft(a), 'answer A');
     assert.equal(f.bindings().a, await targetId(f.context, a));
   });
 }

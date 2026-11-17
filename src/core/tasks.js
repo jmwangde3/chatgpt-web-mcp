@@ -4,16 +4,18 @@ import fs from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { acquireLock, readState, writeState, WebUIError } from '../shared/persistent-browser.js';
+import { safeControlDiagnostics } from '../shared/browser-diagnostics.js';
 import { recoveryFor } from './recovery.js';
 import { validateSessionId } from '../shared/sessions.js';
 import { textHash, matchesUserPrompt } from '../shared/user-message-identity.js';
+import { verifyDataPaths } from '../shared/data-security.js';
 
 export { textHash };
 const fingerprint = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const terminal = new Set(['completed', 'cancelled', 'failed', 'abandoned']);
 export function canonicalURL(value) { const u = new URL(value); return u.origin + u.pathname.replace(/\/$/, ''); }
 export function taskView(task) {
-  const { baseline, promptHash, requestHash, fingerprint, ...publicFields } = task;
+  const { baseline, targetUserMessageId, promptHash, requestHash, fingerprint, ...publicFields } = task;
   return { ...publicFields, recovery: recoveryFor(task) };
 }
 
@@ -40,14 +42,64 @@ export function validateJournal(raw, id) {
 
 const activeIn = (state, sessionId) => Object.values(state.tasks).find(t => !terminal.has(t.state) && t.session_id === sessionId);
 const releaseTask = (state, task) => { if (state.active === task.task_id) state.active = null; };
+const strictIdentity = adapter => adapter.id === 'chatgpt' && adapter.messageIdentityVersion === 1;
+function requireIdentityTarget(task) {
+  if (task.messageIdentityVersion !== 1 || !task.targetUserMessageId) {
+    throw new WebUIError('LEGACY_IDENTITY_UNVERIFIED', 'No persisted stable user identity is available; tracking remains reserved.');
+  }
+}
+function verifyTaskIdentity(task, observed, { confirming = false, adapter } = {}) {
+  const target = confirming ? observed.userMessageId : task.targetUserMessageId;
+  const baselineURL = canonicalURL(task.baseline.url);
+  const expected = task.conversation_url || (!adapter.isRoot(baselineURL) ? baselineURL : null);
+  if (typeof target !== 'string' || !target.trim() || target === task.baseline.userMessageId
+    || (task.targetUserMessageId && task.targetUserMessageId !== target)
+    || observed.userMessageId !== target
+    || (expected && canonicalURL(observed.url) !== canonicalURL(expected))
+    || !matchesUserPrompt(task.promptHash, observed.lastUser, observed.identityCandidates)) {
+    throw new WebUIError('SEND_UNCONFIRMED', 'Stable user identity or full prompt does not match; tracking remains reserved.');
+  }
+}
+function controlIdentity(task, observed, adapter) {
+  return { url: observed.url, userCount: observed.userCount, promptHash: task.promptHash,
+    ...(strictIdentity(adapter) ? { messageIdentityVersion: 1, userMessageId: task.targetUserMessageId,
+      targetUserMessageId: task.targetUserMessageId, managedTaskId: task.task_id } : {}) };
+}
+
+// Aging is advisory only; it never changes occupancy or persisted state.
+function taskAge(task, now) {
+  const since = task.state === 'submitted' ? task.submitted_at ?? task.updated_at ?? task.created_at : task.updated_at ?? task.created_at;
+  const age_ms = Number.isFinite(since) ? Math.max(0, now - since) : null;
+  const age_classification = task.state === 'submitted' && age_ms > 20000 ? 'NEEDS_RECONCILIATION'
+    : task.state === 'uncertain' && age_ms > 600000 ? 'NEEDS_USER_REVIEW' : null;
+  return { age_ms, age_classification };
+}
+
+export function journalStatistics(journal, { now = Date.now() } = {}) {
+  const tasks = Object.values(journal.tasks);
+  const active = tasks.filter(task => !terminal.has(task.state));
+  const state_counts = {};
+  for (const task of tasks) state_counts[task.state] = (state_counts[task.state] || 0) + 1;
+  const oldest = active.filter(task => Number.isFinite(task.created_at)).sort((a, b) => a.created_at - b.created_at)[0];
+  return {
+    total_count: tasks.length, state_counts, active_count: active.length,
+    blocking_count: tasks.filter(task => task.blocking === true).length,
+    blocking_flag_mismatch_count: tasks.filter(task => task.blocking !== !terminal.has(task.state)).length,
+    active_session_count: new Set(active.map(task => task.session_id || '')).size,
+    oldest_active_task: oldest ? { state: oldest.state, created_at: oldest.created_at } : null,
+    oldest_active_age_ms: oldest ? Math.max(0, now - oldest.created_at) : null,
+    oldest_active_state: oldest?.state ?? null,
+  };
+}
 
 // Journal and brief UI operations are serialized per provider. Generation and
 // task occupancy are isolated by session; result waits release the lock.
 export class TaskKernel {
-  constructor(providers, { directory = process.env.WEB_CHAT_DATA_DIR || path.join(os.homedir(), '.web-chat-mcp') } = {}) {
+  constructor(providers, { directory = process.env.WEB_CHAT_DATA_DIR || path.join(os.homedir(), '.web-chat-mcp'), verifyStoragePaths = verifyDataPaths } = {}) {
     this.providers = new Map(providers.map((provider) => [provider.id, provider]));
     this.directory = path.resolve(directory);
     this.sessions = new Map();
+    this.verifyStoragePaths = verifyStoragePaths;
   }
   adapter(id, sessionId) {
     const provider = this.provider(id);
@@ -67,10 +119,20 @@ export class TaskKernel {
     if (!/^[a-z][a-z0-9_-]*:[0-9a-f-]{36}$/.test(taskId)) throw new WebUIError('INVALID_TASK', 'Invalid task_id.');
     const id = taskId.split(':')[0]; this.provider(id); return id;
   }
+  async readSnapshot(id) {
+    this.provider(id);
+    const file = path.join(this.directory, id, 'tasks.json');
+    if (await fs.lstat(path.dirname(file)).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; })) await this.verifyStorage(file, false);
+    return validateJournal(await readState(file), id);
+  }
+  async verifyStorage(file, allowCreate = true) {
+    await this.verifyStoragePaths({ dataDirectories: [path.dirname(file)], protectedFiles: [file, file + '.lock', file + '.lock.reclaim'] }, { allowCreate });
+  }
   async locked(id, fn, signal, deadline) {
     this.provider(id);
     const file = path.join(this.directory, id, 'tasks.json');
-    const release = await acquireLock(`${file}.lock`, { signal, timeout: deadline ? Math.max(1, deadline - Date.now()) : 180000 });
+    await this.verifyStorage(file);
+    const release = await acquireLock(`${file}.lock`, { signal, operation: 'task-journal', timeout: deadline ? Math.max(1, deadline - Date.now()) : 180000 });
     try {
       const raw = await readState(file);
       const state = validateJournal(raw, id);
@@ -130,6 +192,7 @@ export class TaskKernel {
           }
           if (model && !adapter.prepareSettings) await adapter.browser.selectModel(model);
           task.baseline = await adapter.prepare({ prompt, files, existing_draft, model, thinking_level, answer_tier });
+          if (!task.baseline.baselineHash && typeof task.baseline.lastUser === 'string') task.baseline.baselineHash = textHash(task.baseline.lastUser);
           if (adapter.prepareSettings && task.baseline.answerTier) task.answer_tier = task.baseline.answerTier;
           const baselineURL = canonicalURL(task.baseline.url);
           if (!adapter.isRoot(baselineURL) && !adapter.isProvisional?.(baselineURL) && Object.values(state.tasks).some(other => other.task_id !== task.task_id && !terminal.has(other.state) && [other.conversation_url, other.baseline?.url].some(url => url && canonicalURL(url) === baselineURL))) {
@@ -143,28 +206,49 @@ export class TaskKernel {
           const beforeSubmit = async () => { task.state = 'submitting'; task.updated_at = Date.now(); await save(); };
           if (!adapter.stagedSend) await beforeSubmit();
           let sent;
-          try { sent = await adapter.send({ prompt, files, existing_draft, beforeSubmit }); }
+          const onIdentityConfirmed = async observed => {
+            try { verifyTaskIdentity(task, observed, { confirming: true, adapter }); }
+            catch (error) { throw new WebUIError('TASK_IDENTITY_CHANGED', error.message); }
+            task.targetUserMessageId = observed.userMessageId;
+            task.messageIdentityVersion = 1;
+            task.updated_at = Date.now();
+            await save();
+          };
+          try { sent = await adapter.send({ prompt, files, existing_draft, beforeSubmit,
+            ...(strictIdentity(adapter) ? { baseline: task.baseline, managedTaskId: task.task_id, onIdentityConfirmed } : {}) }); }
           catch (error) {
             // Acknowledgement can render just after the browser timeout.
             // Reconcile once, read-only, while still owning the session lock.
             // Never infer delivery from a cleared composer or URL alone.
             if (error.code !== 'SEND_UNCONFIRMED') throw error;
+            if (strictIdentity(adapter) && !task.targetUserMessageId) throw error;
             const observed = await adapter.inspect();
+            if (strictIdentity(adapter)) {
+              verifyTaskIdentity(task, observed, { adapter });
+            }
             if (!adapter.isRoot(baselineURL) && !adapter.isProvisional?.(baselineURL) && canonicalURL(observed.url) !== baselineURL) throw error;
-            if (observed.userCount !== task.baseline.userCount + 1 || !matchesUserPrompt(task.promptHash, observed.lastUser, id === 'chatgpt' ? observed.identityCandidates : [])) throw error;
+            if (!strictIdentity(adapter) && (observed.userCount !== task.baseline.userCount + 1 || !matchesUserPrompt(task.promptHash, observed.lastUser, id === 'chatgpt' ? observed.identityCandidates : []))) throw error;
             sent = { url: observed.url };
           }
-          task.state = 'submitted'; task.submitted_at = Date.now(); task.updated_at = task.submitted_at;
-          const acknowledgement = adapter.restore ? await adapter.inspect() : null;
-          const identityConfirmed = !acknowledgement || (acknowledgement.userCount === task.baseline.userCount + 1 && matchesUserPrompt(task.promptHash, acknowledgement.lastUser, id === 'chatgpt' ? acknowledgement.identityCandidates : []));
+          if (!strictIdentity(adapter)) {
+            task.state = 'submitted'; task.submitted_at = Date.now(); task.updated_at = task.submitted_at;
+          }
+          const acknowledgement = strictIdentity(adapter) || adapter.restore ? await adapter.inspect() : null;
+          if (strictIdentity(adapter)) {
+            if (!task.targetUserMessageId) throw new WebUIError('SEND_UNCONFIRMED', 'No send-time identity confirmation was persisted.');
+            verifyTaskIdentity(task, acknowledgement, { adapter });
+            task.state = 'submitted'; task.submitted_at = Date.now(); task.updated_at = task.submitted_at;
+          }
+          const identityConfirmed = strictIdentity(adapter) || !acknowledgement || (acknowledgement.userCount === task.baseline.userCount + 1 && matchesUserPrompt(task.promptHash, acknowledgement.lastUser, id === 'chatgpt' ? acknowledgement.identityCandidates : []));
           const sentURL = acknowledgement?.url || sent.url;
           if (identityConfirmed && sentURL && !adapter.isRoot(canonicalURL(sentURL)) && !adapter.isProvisional?.(sentURL)) task.conversation_url = canonicalURL(sentURL);
           await save();
         }, { signal, name: 'chat_send' });
       } catch (error) {
-        task.state = task.state === 'preparing' ? 'failed' : 'uncertain';
+        const definitelyNotSent = error.code === 'SEND_NOT_ATTEMPTED' && error.sendOutcome === 'not_attempted';
+        task.state = definitelyNotSent ? 'failed' : task.state === 'preparing' ? 'failed' : 'uncertain';
         task.blocking = task.state !== 'failed';
-        task.error = { code: error.code || (signal?.aborted ? 'INTERRUPTED' : 'PROVIDER_ERROR'), message: error.message.split('\n')[0] };
+        task.error = { code: error.code || (signal?.aborted ? 'INTERRUPTED' : 'PROVIDER_ERROR'), message: error.message.split('\n')[0], ...(error.safeDiagnostics ? { diagnostics: safeControlDiagnostics(error.safeDiagnostics) } : {}) };
         task.updated_at = Date.now(); if (!task.blocking) releaseTask(state, task);
         await save();
       }
@@ -201,7 +285,7 @@ export class TaskKernel {
           task.state = 'submitted';
         } catch (error) {
           task.state = 'uncertain';
-          task.error = { code: error.code || 'RETRY_UNCONFIRMED', message: error.message.split('\n')[0] };
+          task.error = { code: error.code || 'RETRY_UNCONFIRMED', message: error.message.split('\n')[0], ...(error.safeDiagnostics ? { diagnostics: safeControlDiagnostics(error.safeDiagnostics) } : {}) };
         }
         task.updated_at = Date.now(); await save();
       }, { signal, name: 'chat_retry' });
@@ -216,6 +300,18 @@ export class TaskKernel {
       if (!task) throw new WebUIError('TASK_NOT_FOUND', 'Task not found.');
       const revalidate = refresh && task.state === 'completed' && !cancel;
       if (terminal.has(task.state) && !revalidate) return taskView(task);
+      if (task.state === 'preparing') {
+        task.state = 'failed'; task.blocking = false; releaseTask(state, task);
+        task.error = { code: 'PREFLIGHT_INTERRUPTED', message: 'Interrupted before sending. No automatic retry.' }; await save(); return taskView(task);
+      }
+      const adapter = this.adapter(id, task.session_id);
+      if (strictIdentity(adapter) && task.state === 'completed' && (!task.targetUserMessageId || task.messageIdentityVersion !== 1)) return taskView(task);
+      if (strictIdentity(adapter) && !terminal.has(task.state)) {
+        try { requireIdentityTarget(task); } catch (error) {
+          task.state = 'uncertain'; task.error = { code: error.code, message: error.message };
+          task.updated_at = Date.now(); await save(); return taskView(task);
+        }
+      }
       if (revalidate) {
         if (Object.values(state.tasks).some(t => t.task_id !== taskId && t.session_id === task.session_id && (t.created_at >= task.created_at || !terminal.has(t.state)))) throw new WebUIError('TASK_SUPERSEDED', 'A later task uses this session. The cached result is preserved; inspect history separately.');
         task.previous_response = task.response;
@@ -223,11 +319,6 @@ export class TaskKernel {
         if (!task.session_id) state.active = taskId;
         await save();
       }
-      if (task.state === 'preparing') {
-        task.state = 'failed'; task.blocking = false; releaseTask(state, task);
-        task.error = { code: 'PREFLIGHT_INTERRUPTED', message: 'Interrupted before sending. No automatic retry.' }; await save(); return taskView(task);
-      }
-      const adapter = this.adapter(id, task.session_id);
       const previousState = task.state, previousError = task.error;
       let observationOnly = !cancel && !revalidate;
       try {
@@ -243,7 +334,11 @@ export class TaskKernel {
           signal?.throwIfAborted();
           const url = canonicalURL(observed.url);
           if (url !== expected && !root) throw new WebUIError('CONVERSATION_CHANGED', 'Open the task conversation before resuming it.');
-          const acknowledged = observed.userCount === task.baseline.userCount + 1 && matchesUserPrompt(task.promptHash, observed.lastUser, id === 'chatgpt' ? observed.identityCandidates : []);
+          if (strictIdentity(adapter)) {
+            requireIdentityTarget(task);
+            verifyTaskIdentity(task, observed, { adapter });
+          }
+          const acknowledged = strictIdentity(adapter) || (observed.userCount === task.baseline.userCount + 1 && matchesUserPrompt(task.promptHash, observed.lastUser, id === 'chatgpt' ? observed.identityCandidates : []));
           // UI acknowledgement may arrive after submitPrompt(wait:false).
           // Briefly keep observing an unchanged baseline, without a retry.
           if (!acknowledged && !cancel && task.state === 'submitted' && task.submitted_at && Date.now() - task.submitted_at < 20000 && observed.userCount === task.baseline.userCount && observed.responseCount === task.baseline.responseCount) return;
@@ -251,19 +346,21 @@ export class TaskKernel {
           // From here the callback may mutate task state or settle generation.
           // A timeout after this boundary is not a purely observational timeout.
           observationOnly = false;
+          const identity = controlIdentity(task, observed, adapter);
           if (!adapter.isProvisional?.(url)) task.conversation_url = url;
           if (task.retry_count && !task.retry_activity) {
             if (observed.busy || (observed.text && observed.text !== task.previous_response?.text)) task.retry_activity = true;
             else throw new WebUIError('RETRY_UNCONFIRMED', 'Only the previous answer is visible; retry completion is not confirmed. Do not click again.');
           }
-          if (observed.complete && observed.responseCount > task.baseline.responseCount) {
-            await adapter.settle();
+          const newResponse = strictIdentity(adapter) ? typeof observed.responseId === 'string' && !!observed.responseId.trim() && observed.responseId !== task.baseline.responseId : observed.responseCount > task.baseline.responseCount;
+          if (observed.complete && newResponse) {
+            await adapter.settle(identity);
             task.state = 'completed'; task.blocking = false; releaseTask(state, task);
             task.response = { text: observed.text, format: 'plain_text', complete: true, model: observed.model || null, url: observed.url };
           } else if (cancel) {
             if (!observed.busy) throw new WebUIError('CANCEL_UNCONFIRMED', 'No active generation control could be confirmed. Task remains reserved.');
-            await adapter.cancel();
-            await adapter.settle();
+            await adapter.cancel(identity);
+            await adapter.settle(identity, { allowIdle: true });
             task.state = 'cancelled'; task.blocking = false; releaseTask(state, task);
             task.response = { text: observed.text || '', format: 'plain_text', complete: false, model: observed.model || null, url: observed.url };
           } else { task.state = observed.busy ? 'running' : 'submitted'; task.blocking = true; }
@@ -274,7 +371,7 @@ export class TaskKernel {
         task.state = 'uncertain';
         const interruptedAfterBoundary = budgetReason && signal?.reason === budgetReason && error === budgetReason;
         const retainPriorError = error.code === 'CONTROL_BUSY' && previousState === 'uncertain' && previousError && !['CONTROL_BUSY', 'RESULT_TIMEOUT'].includes(previousError.code);
-        task.error = retainPriorError ? previousError : { code: interruptedAfterBoundary ? (cancel ? 'CANCEL_UNCONFIRMED' : 'RESULT_OBSERVATION_INTERRUPTED') : error.code || (signal?.aborted ? 'INTERRUPTED' : 'PROVIDER_ERROR'), message: error.message.split('\n')[0] };
+        task.error = retainPriorError ? previousError : { code: interruptedAfterBoundary ? (cancel ? 'CANCEL_UNCONFIRMED' : 'RESULT_OBSERVATION_INTERRUPTED') : error.code || (signal?.aborted ? 'INTERRUPTED' : 'PROVIDER_ERROR'), message: error.message.split('\n')[0], ...(error.safeDiagnostics ? { diagnostics: safeControlDiagnostics(error.safeDiagnostics) } : {}) };
       }
       task.updated_at = Date.now(); await save(); return taskView(task);
     }, signal, deadline);
@@ -317,15 +414,39 @@ export class TaskKernel {
       const task = state.tasks[taskId];
       if (!task) throw new WebUIError('TASK_NOT_FOUND', 'Task not found.');
       if (terminal.has(task.state)) return taskView(task);
+      if (task.state === 'preparing') {
+        task.state = 'failed'; task.blocking = false; releaseTask(state, task);
+        task.error = { code: 'PREFLIGHT_INTERRUPTED', message: 'Interrupted before sending. No automatic retry.' }; await save(); return taskView(task);
+      }
       const adapter = this.adapter(id, task.session_id);
+      if (strictIdentity(adapter)) {
+        try { requireIdentityTarget(task); } catch (error) {
+          task.state = 'uncertain'; task.error = { code: error.code, message: error.message };
+          task.updated_at = Date.now(); await save(); return taskView(task);
+        }
+      }
+      try {
       await adapter.browser.runExclusive(async () => {
         const observed = await adapter.inspect({ allowPageError: true });
         const saved = task.conversation_url;
         const expected = saved && !adapter.isProvisional?.(saved) ? saved : task.baseline?.url;
-        if (!expected || (canonicalURL(observed.url) !== canonicalURL(expected) && !adapter.isRoot(canonicalURL(expected)))) throw new WebUIError('CONVERSATION_CHANGED', 'Return to the original page before abandoning tracking.');
+        if (!expected || canonicalURL(observed.url) !== canonicalURL(expected)) throw new WebUIError('CONVERSATION_CHANGED', 'Return to the original page before abandoning tracking.');
+        if (strictIdentity(adapter)) {
+          verifyTaskIdentity(task, observed, { adapter });
+        }
         if (observed.busy) throw new WebUIError('GENERATING', 'Generation is active. Use chat_cancel for the verified task.');
-        await adapter.settle();
+        const sent = strictIdentity(adapter) || (observed.userCount === task.baseline.userCount + 1 && matchesUserPrompt(task.promptHash, observed.lastUser, id === 'chatgpt' ? observed.identityCandidates : []));
+        const baseline = observed.userCount === task.baseline.userCount && observed.responseCount === task.baseline.responseCount &&
+          matchesUserPrompt(task.baseline.baselineHash, observed.lastUser);
+        if (!sent && !baseline) throw new WebUIError('TASK_IDENTITY_CHANGED', 'Neither the original sent turn nor the complete original baseline is confirmed; tracking was preserved.');
+        await adapter.settle({ ...controlIdentity(task, observed, adapter),
+          ...(sent ? {} : { baselineOnly: true, baselineHash: task.baseline.baselineHash, responseCount: task.baseline.responseCount }) }, { allowIdle: true });
       }, { signal, name: 'chat_abandon' });
+      } catch (error) {
+        if (!strictIdentity(adapter)) throw error;
+        task.state = 'uncertain'; task.error = { code: error.code || 'PROVIDER_ERROR', message: error.message.split('\n')[0] };
+        task.updated_at = Date.now(); await save(); return taskView(task);
+      }
       task.state = 'abandoned'; task.blocking = false; task.updated_at = Date.now();
       task.error = { code: 'TRACKING_ABANDONED', message: 'Tracking explicitly abandoned. Delivery and completion are not asserted; the request_id remains reserved.' };
       releaseTask(state, task); await save(); return taskView(task);
@@ -334,17 +455,16 @@ export class TaskKernel {
   async list(id, limit = 20, { offset = 0, state: filter } = {}) {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100 || !Number.isInteger(offset) || offset < 0) throw new WebUIError('INVALID_PAGE', 'limit must be 1..100 and offset a nonnegative integer.');
     if (filter && !['preparing', 'submitting', 'submitted', 'running', 'uncertain', ...terminal].includes(filter)) throw new WebUIError('INVALID_STATE', 'Unknown task state.');
-    return this.locked(id, async (state) => {
-      const tasks = Object.values(state.tasks).filter((task) => !filter || task.state === filter).sort((a, b) => b.created_at - a.created_at || a.task_id.localeCompare(b.task_id));
-      return { provider: id, active_task: state.active, active_tasks: Object.values(state.tasks).filter(t => !terminal.has(t.state)).map(t => ({ task_id: t.task_id, session_id: t.session_id || null, state: t.state })), total: tasks.length, offset, next_offset: offset + limit < tasks.length ? offset + limit : null, tasks: tasks.slice(offset, offset + limit).map((task) => {
-        const view = taskView(task); delete view.response; delete view.previous_response; return view;
-      }) };
-    });
+    const state = await this.readSnapshot(id);
+    const now = Date.now();
+    const tasks = Object.values(state.tasks).filter((task) => !filter || task.state === filter).sort((a, b) => b.created_at - a.created_at || a.task_id.localeCompare(b.task_id));
+    return { provider: id, active_task: state.active, active_tasks: Object.values(state.tasks).filter(t => !terminal.has(t.state)).map(t => ({ task_id: t.task_id, session_id: t.session_id || null, state: t.state })), total: tasks.length, offset, next_offset: offset + limit < tasks.length ? offset + limit : null, tasks: tasks.slice(offset, offset + limit).map((task) => {
+      const view = { ...taskView(task), ...taskAge(task, now) }; delete view.response; delete view.previous_response; return view;
+    }) };
   }
   async findRequest(id, requestId) {
-    return this.locked(id, (state) => {
-      const task = Object.values(state.tasks).find((task) => task.requestHash === fingerprint(requestId));
-      return task ? taskView(task) : null;
-    });
+    const state = await this.readSnapshot(id);
+    const task = Object.values(state.tasks).find((task) => task.requestHash === fingerprint(requestId));
+    return task ? taskView(task) : null;
   }
 }

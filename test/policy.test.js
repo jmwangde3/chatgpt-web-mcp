@@ -8,14 +8,23 @@ import { promisify } from "node:util";
 
 const runNode = promisify(execFile);
 
-function isolatedPolicyCheck(source, overrides = {}) {
+async function isolatedPolicyCheck(source, overrides = {}) {
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([name]) => !name.startsWith("CHATGPT_WEB_")),
   );
-  return runNode(process.execPath, ["--input-type=module", "--eval", source], {
+  const directory = await mkdtemp(path.join(tmpdir(), 'isolated-policy-'));
+  const paths = Object.fromEntries(Object.entries({
+    PROFILE: 'profile', BROWSER_STATE: 'browser.json', RUNTIME_STATE: 'runtime.json',
+    OPERATION_LOCK: 'operation.lock', NETWORK_LOG: 'network.jsonl', CONTEXT_ARCHIVE_DIR: 'archive',
+  }).map(([key, name]) => [`CHATGPT_WEB_${key}`, path.join(directory, name)]));
+  try {
+    return await runNode(process.execPath, ["--input-type=module", "--eval", source], {
     cwd: fileURLToPath(new URL("../", import.meta.url)),
-    env: { ...env, ...overrides },
+    env: { ...env, ...paths, ...overrides },
   });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 test("default intervals are five seconds and disabled probes never touch the browser", async () => {
@@ -41,13 +50,13 @@ test("default intervals are five seconds and disabled probes never touch the bro
   `);
 });
 
-test("exited MCP owner releases its generation lock without reading the browser", async () => {
+test("exited MCP owner cannot release generation without original-page completion evidence", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "chatgpt-web-mcp-policy-"));
   const runtimeFile = path.join(directory, "runtime.json");
   try {
     await writeFile(runtimeFile, JSON.stringify({
       activeGeneration: { active: true, ownerPid: 2_147_483_647 },
-    }));
+    }), { encoding: 'utf8', mode: 0o600 });
     await isolatedPolicyCheck(`
       import assert from "node:assert/strict";
       import { readFile, writeFile } from "node:fs/promises";
@@ -56,15 +65,13 @@ test("exited MCP owner releases its generation lock without reading the browser"
       const browser = new ChatGPTBrowser();
       browser.page = async () => assert.fail("stale-owner cleanup must not open a page");
       browser.getLatestResponse = async () => assert.fail("stale-owner cleanup needs no page read");
-      assert.deepEqual(await browser.assertActionsAllowed("offline-test"), {
-        allowed: true, staleGenerationCleared: true,
-      });
+      await assert.rejects(browser.assertActionsAllowed("offline-test"), /生成任务/);
       const state = JSON.parse(await readFile(RUNTIME_STATE_FILE, "utf8"));
-      assert.equal(state.activeGeneration, null);
-      assert.ok(state.lastGenerationInterruptedAt > 0);
+      assert.equal(state.activeGeneration.active, true);
+      assert.equal(state.lastGenerationInterruptedAt, undefined);
 
       for (const ownerPid of [process.pid, null]) {
-        await writeFile(RUNTIME_STATE_FILE, JSON.stringify({ activeGeneration: { active: true, ownerPid } }));
+        await writeFile(RUNTIME_STATE_FILE, JSON.stringify({ activeGeneration: { active: true, ownerPid } }), { encoding: 'utf8', mode: 0o600 });
         await assert.rejects(browser.assertActionsAllowed("offline-test"), /生成任务/);
       }
     `, { CHATGPT_WEB_RUNTIME_STATE: runtimeFile });
@@ -82,11 +89,19 @@ test('ChatGPT session context isolates production runtime writes while preservin
       import { readFile, writeFile } from 'node:fs/promises';
       import { ChatGPTBrowser } from './src/browser.js';
       import { RUNTIME_STATE_FILE } from './src/config.js';
-      const generation = { active: true, ownerPid: process.pid };
-      await writeFile(RUNTIME_STATE_FILE, JSON.stringify({activeGeneration:generation,sessions:{a:{activeGeneration:generation},b:{activeGeneration:generation}}}));
+      const generation = { active: true, ownerPid: process.pid, url:'https://chatgpt.com/c/original' };
+      const { createHash } = await import('node:crypto');
+      const lastUser = 'session policy prompt';
+      const expected = { url: generation.url, userCount: 1,
+        promptHash: createHash('sha256').update(lastUser).digest('hex') };
+      await writeFile(RUNTIME_STATE_FILE, JSON.stringify({activeGeneration:generation,sessions:{a:{activeGeneration:generation},b:{activeGeneration:generation}}}), { encoding: 'utf8', mode: 0o600 });
       const a = new ChatGPTBrowser({sessionId:'a'}), b = new ChatGPTBrowser({sessionId:'b'}), fresh = new ChatGPTBrowser({sessionId:'new'});
       a.firstVisible = async () => null;
-      await a.runExclusive(() => a.settleManagedGeneration());
+      a.page = async () => ({ evaluate: async () => ({ url: generation.url,
+        count: 1, isLast: true, lastText: lastUser, identityCandidates: [] }) });
+      a.getLatestResponse = async () => ({generating:false,activeGeneration:generation,url:generation.url,
+        userMessageCount:1,lastUserMessage:lastUser,identitySnapshotValid:true});
+      await a.runExclusive(() => a.settleManagedGeneration(expected, {allowIdle:true}));
       const read = async () => JSON.parse(await readFile(RUNTIME_STATE_FILE,'utf8'));
       const state = await read();
       assert.equal(state.activeGeneration.active,true);
@@ -94,7 +109,7 @@ test('ChatGPT session context isolates production runtime writes while preservin
       assert.equal(state.sessions.a.activeGeneration,null);
       await fresh.runExclusive(() => fresh.assertActionsAllowed());
       await assert.rejects(b.runExclusive(() => b.assertActionsAllowed()), /生成任务/);
-      await writeFile(RUNTIME_STATE_FILE, JSON.stringify({...await read(),circuitBreaker:{active:true}}));
+      await writeFile(RUNTIME_STATE_FILE, JSON.stringify({...await read(),circuitBreaker:{active:true}}), { encoding: 'utf8', mode: 0o600 });
       await assert.rejects(a.runExclusive(() => a.assertActionsAllowed()), /熔断/);
       await assert.rejects(fresh.runExclusive(() => fresh.assertActionsAllowed()), /熔断/);
       const { chatgptProvider } = await import('./src/providers/adapters.js');

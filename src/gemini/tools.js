@@ -7,7 +7,7 @@ export function registerGeminiTools(server, browser = new GeminiBrowser(), kerne
   const readOnly = new Set(['gemini_status', 'gemini_browser_lifecycle', 'gemini_get_latest_response', 'gemini_circuit_breaker_status', 'gemini_clear_circuit_breaker']);
   const timeout = z.number().int().min(1000).max(900000).optional();
   const waitOptions = { wait: z.boolean().default(true), timeoutMs: timeout };
-  const tool = (name, description, schema, handler) => server.tool(name, description, schema, async (input, extra) => {
+  const tool = (name, description, schema, handler) => server.registerTool(name, { description, inputSchema: Object.keys(schema).length ? z.strictObject(schema) : schema }, async (input, extra) => {
     try {
       const result = await kernel.run('gemini', () => handler(input), { signal: extra.signal, readOnly: readOnly.has(name), name });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };

@@ -1,5 +1,9 @@
 # ChatGPT & Gemini Web MCP
 
+## Code review skills
+
+`gh-review` is the ChatGPT Web review entry point (auto/github/local); `local-review` handles explicitly requested local evidence or delegated fallback. Both use the existing `web-chat` skill and MCP. Installation does not switch the host model, register another server, or authorize sharing code. See [REVIEW_SKILLS.md](docs/REVIEW_SKILLS.md) for paired installation, updates, removal and npm package files.
+
 ## Current send defaults
 
 For ChatGPT, `chat_send` and `chatgpt_send_message` select and reverify GPT-6 + 高 before sending when model, thinking level and answer tier are all omitted. Explicit settings take precedence; an unspecified counterpart stays unchanged. Conflicting thinking level and answer tier fail before sending. Gemini is unaffected. The legacy extreme-tier route runs only when explicitly invoked. Reconnect existing MCP clients to load changes. This repository prefers web GPT-6 High for reasoning and Codex 6.1 Terra medium for execution as a collaboration convention; MCP does not switch the host model or delegate automatically.
@@ -21,7 +25,7 @@ ChatGPT now recognizes the current Send button and verifies the appended prompt 
 
 This repository includes both the MCP server (`src/`) and the [web-chat expert skill](skills/web-chat/SKILL.md). The skill prepares the current agent task's questions, context and authorized files, consults ChatGPT or Gemini in the browser, waits for the full answer, and brings it back to continue the original task. The default expert is ChatGPT **GPT-6 + 高**; explicit provider/model requests take precedence.
 
-Version 0.7.10 expanded Gemini's nested Thinking level menu before selecting and verifying High, while retaining flat-menu and legacy Extended thinking support. Gemini settings still require explicit selection; current ChatGPT send defaults are described above. Reconnect MCP after upgrading; update an installed skill separately when desired.
+Historical note (0.7.10): the web-chat expert skill then defaulted to Gemini 4 Argon + High. That release expanded Gemini's nested Thinking level menu before selecting and verifying High, while retaining flat-menu and legacy Extended thinking support. The current consultation default is ChatGPT GPT-6 + 高. Gemini remains supported and must follow the user's explicit provider and model choice. Current ChatGPT send defaults are described above. Reconnect MCP after upgrading; update an installed skill separately when desired.
 
 See the [Codex installation and usage guide](docs/CODEX_SKILL.md) to register the `web-chat` MCP and install the skill. If the MCP is already configured, install only the skill. Example: `Use $web-chat to ask Gemini to review this plan, then use its complete response to improve the plan.`
 
@@ -191,6 +195,10 @@ These values can be changed without editing source code:
 | `CHATGPT_WEB_PRO_RECHECK_AFTER_CLOSE_MS` | `10800000` (3 hours) |
 | `CHATGPT_WEB_MAX_CONVERSATION_TURNS` | `40` |
 | `CHATGPT_WEB_CONTEXT_ARCHIVE_DIR` | `~/.chatgpt-web-mcp/conversation-context` |
+
+`CHATGPT_WEB_MCP_TOOLSET` defaults to `full`, preserving compatibility with all existing tools: 17 `chat_*`, 29 `chatgpt_*`, and 17 `gemini_*` tools. Explicitly set it to `unified` in this MCP connection's environment and restart the connection to register only the existing 17 `chat_*` tools. Provider-specific tools are not registered in that mode. Legacy upload, diagnostic, and other provider-specific functions without a unified replacement are unavailable through those legacy tools in `unified`; this mode does not imply complete feature parity.
+
+Both modes retain the same `request_id` deduplication, `task_id` recovery, and `session_id` binding rules. `tools/list` does not launch a browser. Upgrading does not enable `unified` for you or change global user configuration. [.env.example](.env.example) shows only the default `full` value.
 
 See [.env.example](.env.example). The project does not automatically load `.env`; inject variables through the MCP client, shell, or operating system.
 

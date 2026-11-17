@@ -1,0 +1,47 @@
+{
+  "canonical_edit_source": "Skills Manager central library",
+  "distribution_target": [
+    "codex"
+  ],
+  "hash_scope": "Windows central/local export bytes; normalized hash accounts for Git line endings",
+  "duplicate_entry_created": false,
+  "files": [
+    {
+      "file": "gh-review/SKILL.md",
+      "windows_local_sha256": "34e0341af0037e8016a4cb6c2243daaf82644bdf06627c2a1835b21fe535a85f",
+      "normalized_utf8_sha256": "2e30efff2882f6f8bba2d49e9848d2aed99c2914dc93546a870b59c4c8ff59fc",
+      "historical_file": "codex-chatgpt-review-github/SKILL.md",
+      "historical_export_matches_center": true
+    },
+    {
+      "file": "gh-review/references/code-review-protocol.md",
+      "windows_local_sha256": "04a829462c0b756ab46f0e1f2347345f6cad7054d57eb79b5e3c95185182e8f8",
+      "normalized_utf8_sha256": "2e654fd22755e0e8147f0a59d33ab3194a8b9d54ea242e8dc3b3a89e64291cd3",
+      "historical_file": "codex-chatgpt-review-github/references/code-review-protocol.md",
+      "historical_export_matches_center": true
+    },
+    {
+      "file": "gh-review/references/github-review-workflow.md",
+      "windows_local_sha256": "c9e7d44d8495198ece017154469fd2909c0d92136c4a38c3ac7b82c83613bef6",
+      "normalized_utf8_sha256": "d015c43b6039a7eaeef4cce413454e67c8e5e00e8e03f166286447f4f4f512a8",
+      "historical_file": "codex-chatgpt-review-github/references/github-review-workflow.md",
+      "historical_export_matches_center": true
+    },
+    {
+      "file": "local-review/SKILL.md",
+      "windows_local_sha256": "1a54e71e26bbfc1f70f14466881f137b36aeb9e059aec766c3773b9717b990da",
+      "normalized_utf8_sha256": "35138a5a9d1f06d7429abd71e059b8e7f4c8b372d83acc14da440cecc24e9814",
+      "historical_file": "codex-chatgpt-review-local/SKILL.md",
+      "historical_export_matches_center": true
+    },
+    {
+      "file": "local-review/references/local-review-workflow.md",
+      "windows_local_sha256": "13ef54940c8b5ea39972114d3aa771fba0b14b59962aae1210e221669a0dc7d8",
+      "normalized_utf8_sha256": "c3f3f11e4c647dd0a7daf9085ee81569295d7a3749b79205d3869f64b4ee88cf",
+      "historical_file": "codex-chatgpt-review-local/references/local-review-workflow.md",
+      "historical_export_matches_center": true
+    }
+  ],
+  "historical_source_registry": "git review/chatgpt-collaboration-v2; existing IDs retained; up_to_date",
+  "evidence_scope": "Historical pre-rename V2.0 hash evidence only. Does not assert that V2.1 candidates match the unchanged live center."
+}

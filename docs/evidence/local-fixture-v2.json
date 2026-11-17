@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "created_at_utc": "2026-11-16T16:47:18.552644+00:00",
+  "scope": "Codex-only evidence stage; not complete LocalPASS",
+  "complete_local_pass": false,
+  "codex_evidence_stage_passed": true,
+  "temporary_directory": "<ephemeral-test-directory>",
+  "system_temp_root": "<system-temp>",
+  "remote_configured": false,
+  "git_initialized": false,
+  "push_executed": false,
+  "external_transmission_performed": false,
+  "chatgpt_reply_received": false,
+  "web_review_performed": false,
+  "web_review_blocker": "MCP chat_status returned sign-in required; no bypass attempted",
+  "preliminary_attempt": {
+    "outcome": "system temporary directory permission denied before any test ran",
+    "temporary_directory_removed": true
+  },
+  "stages": [
+    {
+      "name": "baseline_two_tests_pass",
+      "command": [
+        "python",
+        "-X",
+        "utf8",
+        "-B",
+        "-m",
+        "unittest",
+        "-v",
+        "test_average"
+      ],
+      "exit_code": 0,
+      "test_count": 2,
+      "source_sha256": "9ddf6b5cab8173bb955e7b2423c6fcc1c63724dd54360419a00ca22c3013b526",
+      "tests_sha256": "eb6e485d32d99d7e0fd18a13696f221384d9dddcf1c8052d1e2bdc287d876346",
+      "source_char_count": 80,
+      "tests_char_count": 227,
+      "source_text": "def average(scores):\n    return 0 if not scores else sum(scores) // len(scores)\n",
+      "tests_text": "import unittest\nfrom average import average\n\nclass AverageTests(unittest.TestCase):\n    def test_empty(self):\n        self.assertEqual(average([]), 0)\n\n    def test_divisible(self):\n        self.assertEqual(average([2, 4]), 3)\n",
+      "stdout": "",
+      "stderr": "test_divisible (test_average.AverageTests.test_divisible) ... ok\ntest_empty (test_average.AverageTests.test_empty) ... ok\n\n----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK\n",
+      "files_read_and_hashed_this_stage": true,
+      "source_unchanged_during_run": true,
+      "tests_unchanged_during_run": true
+    },
+    {
+      "name": "fractional_regression_reproduced",
+      "command": [
+        "python",
+        "-X",
+        "utf8",
+        "-B",
+        "-m",
+        "unittest",
+        "-v",
+        "test_average"
+      ],
+      "exit_code": 1,
+      "test_count": 3,
+      "source_sha256": "9ddf6b5cab8173bb955e7b2423c6fcc1c63724dd54360419a00ca22c3013b526",
+      "tests_sha256": "076cffdf448d6dd62c739a9d6b1d2509d3cce4975f0924bc6bc05f012224754f",
+      "source_char_count": 80,
+      "tests_char_count": 306,
+      "source_text": "def average(scores):\n    return 0 if not scores else sum(scores) // len(scores)\n",
+      "tests_text": "import unittest\nfrom average import average\n\nclass AverageTests(unittest.TestCase):\n    def test_empty(self):\n        self.assertEqual(average([]), 0)\n\n    def test_divisible(self):\n        self.assertEqual(average([2, 4]), 3)\n\n    def test_fractional(self):\n        self.assertEqual(average([2, 3]), 2.5)\n",
+      "stdout": "",
+      "stderr": "test_divisible (test_average.AverageTests.test_divisible) ... ok\ntest_empty (test_average.AverageTests.test_empty) ... ok\ntest_fractional (test_average.AverageTests.test_fractional) ... FAIL\n\n======================================================================\nFAIL: test_fractional (test_average.AverageTests.test_fractional)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"<ephemeral-test-directory>\\test_average.py\", line 12, in test_fractional\n    self.assertEqual(average([2, 3]), 2.5)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 2 != 2.5\n\n----------------------------------------------------------------------\nRan 3 tests in 0.001s\n\nFAILED (failures=1)\n",
+      "files_read_and_hashed_this_stage": true,
+      "source_unchanged_during_run": true,
+      "tests_unchanged_during_run": true
+    },
+    {
+      "name": "fixed_three_tests_pass",
+      "command": [
+        "python",
+        "-X",
+        "utf8",
+        "-B",
+        "-m",
+        "unittest",
+        "-v",
+        "test_average"
+      ],
+      "exit_code": 0,
+      "test_count": 3,
+      "source_sha256": "88a7f5e78e3f65ad594a1e77c96eab76ddc515f81805ca51b21ccb47d492fcb0",
+      "tests_sha256": "076cffdf448d6dd62c739a9d6b1d2509d3cce4975f0924bc6bc05f012224754f",
+      "source_char_count": 79,
+      "tests_char_count": 306,
+      "source_text": "def average(scores):\n    return 0 if not scores else sum(scores) / len(scores)\n",
+      "tests_text": "import unittest\nfrom average import average\n\nclass AverageTests(unittest.TestCase):\n    def test_empty(self):\n        self.assertEqual(average([]), 0)\n\n    def test_divisible(self):\n        self.assertEqual(average([2, 4]), 3)\n\n    def test_fractional(self):\n        self.assertEqual(average([2, 3]), 2.5)\n",
+      "stdout": "",
+      "stderr": "test_divisible (test_average.AverageTests.test_divisible) ... ok\ntest_empty (test_average.AverageTests.test_empty) ... ok\ntest_fractional (test_average.AverageTests.test_fractional) ... ok\n\n----------------------------------------------------------------------\nRan 3 tests in 0.000s\n\nOK\n",
+      "files_read_and_hashed_this_stage": true,
+      "source_unchanged_during_run": true,
+      "tests_unchanged_during_run": true
+    }
+  ],
+  "git_rev_parse": {
+    "command": [
+      "git",
+      "rev-parse",
+      "--show-toplevel"
+    ],
+    "exit_code": 128,
+    "stdout": "",
+    "stderr": "fatal: not a git repository (or any of the parent directories): .git\n",
+    "inside_repository": false
+  },
+  "cleanup": {
+    "only_created_temporary_directories_removed": true,
+    "temporary_directory_absent": true,
+    "preliminary_directory_absent": true
+  }
+}

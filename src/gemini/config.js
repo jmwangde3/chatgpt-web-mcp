@@ -17,6 +17,7 @@ export function geminiConfig(env = process.env) {
     browserState: path.join(dataDir, "browser-state.json"),
     runtimeState: path.join(dataDir, "runtime-state.json"),
     operationLock: path.join(dataDir, "browser-operation.lock"),
+    taskLock: path.join(env.WEB_CHAT_DATA_DIR || path.join(os.homedir(), '.web-chat-mcp'), 'gemini', 'tasks.json.lock'),
     archiveDir: path.resolve(env.GEMINI_WEB_ARCHIVE_DIR || path.join(dataDir, "conversation-context")),
     executable: env.GEMINI_WEB_CHROME ? path.resolve(env.GEMINI_WEB_CHROME) : resolveChromeExecutable({ env }),
     headless: /^(1|true|yes)$/i.test(env.GEMINI_WEB_HEADLESS || "false"),
