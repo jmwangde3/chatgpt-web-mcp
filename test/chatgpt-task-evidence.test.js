@@ -34,6 +34,22 @@ async function fixture(t, { callback = true, errorCode } = {}) {
 const saved = async (f, task) => (await f.kernel.readSnapshot('chatgpt')).tasks[task.task_id];
 const finish = f => Object.assign(f.page, { busy: false, complete: true, responseId: 'new-answer' });
 
+test('interrupted preparation releases the session on read or abandon', async t => {
+  for (const operation of ['read', 'abandon']) {
+    const f = await fixture(t); const task = await f.kernel.send(f.input);
+    await f.kernel.locked('chatgpt', async (state, save) => {
+      const record = state.tasks[task.task_id];
+      record.state = 'preparing'; record.blocking = true;
+      delete record.targetUserMessageId; delete record.messageIdentityVersion;
+      await save();
+    });
+    const result = operation === 'read' ? await f.reconnect().read(task.task_id)
+      : await f.reconnect().abandon(task.task_id, { confirm: true });
+    assert.equal(result.state, 'failed'); assert.equal(result.blocking, false);
+    assert.equal(result.error.code, 'PREFLIGHT_INTERRUPTED');
+  }
+});
+
 test('callback persists ID; reconnect completes identical answer text with new assistant ID', async t => {
   const f = await fixture(t); const task = await f.kernel.send(f.input);
   assert.equal(task.state, 'submitted'); assert.equal(task.messageIdentityVersion, 1);

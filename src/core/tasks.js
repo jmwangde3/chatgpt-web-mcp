@@ -300,6 +300,10 @@ export class TaskKernel {
       if (!task) throw new WebUIError('TASK_NOT_FOUND', 'Task not found.');
       const revalidate = refresh && task.state === 'completed' && !cancel;
       if (terminal.has(task.state) && !revalidate) return taskView(task);
+      if (task.state === 'preparing') {
+        task.state = 'failed'; task.blocking = false; releaseTask(state, task);
+        task.error = { code: 'PREFLIGHT_INTERRUPTED', message: 'Interrupted before sending. No automatic retry.' }; await save(); return taskView(task);
+      }
       const adapter = this.adapter(id, task.session_id);
       if (strictIdentity(adapter) && task.state === 'completed' && (!task.targetUserMessageId || task.messageIdentityVersion !== 1)) return taskView(task);
       if (strictIdentity(adapter) && !terminal.has(task.state)) {
@@ -314,10 +318,6 @@ export class TaskKernel {
         task.response = null; task.state = 'uncertain'; task.blocking = true;
         if (!task.session_id) state.active = taskId;
         await save();
-      }
-      if (task.state === 'preparing') {
-        task.state = 'failed'; task.blocking = false; releaseTask(state, task);
-        task.error = { code: 'PREFLIGHT_INTERRUPTED', message: 'Interrupted before sending. No automatic retry.' }; await save(); return taskView(task);
       }
       const previousState = task.state, previousError = task.error;
       let observationOnly = !cancel && !revalidate;
@@ -414,6 +414,10 @@ export class TaskKernel {
       const task = state.tasks[taskId];
       if (!task) throw new WebUIError('TASK_NOT_FOUND', 'Task not found.');
       if (terminal.has(task.state)) return taskView(task);
+      if (task.state === 'preparing') {
+        task.state = 'failed'; task.blocking = false; releaseTask(state, task);
+        task.error = { code: 'PREFLIGHT_INTERRUPTED', message: 'Interrupted before sending. No automatic retry.' }; await save(); return taskView(task);
+      }
       const adapter = this.adapter(id, task.session_id);
       if (strictIdentity(adapter)) {
         try { requireIdentityTarget(task); } catch (error) {
