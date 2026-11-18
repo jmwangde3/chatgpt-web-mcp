@@ -14,6 +14,7 @@ async function stop(browser, selectors, users, readIdentity, expected) {
 export function geminiProvider(browser) {
   return {
     id: 'gemini', browser, stagedSend: true,
+    taskScope: browser.config?.taskScope,
     localConfig: browser.config,
     capabilities: { files: true, models: true, history: true, archive: 'loaded-messages', cancellation: true, sessions: true, retry: true },
     isRoot: (url) => url === 'https://gemini.google.com/app',

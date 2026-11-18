@@ -34,3 +34,5 @@ Run `npm test`, `npm run smoke` and `npm run test:browser` for regression checks
 Set `WEB_CHAT_SHARED_BROWSER=true` in the MCP server environment to use the existing ChatGPT dedicated Chrome for both providers, in separate tabs. Use the same setting for local login and diagnostic commands. This does not use your personal Chrome. Sign in to Gemini in the dedicated window if needed; the old Gemini profile and journal are not copied or deleted.
 
 Each provider retains its own runtime, task journal, operation lock, and session bindings. A Gemini task tied to an old independent browser is not automatically moved; finish it in the independent mode before switching. Ordinary disconnects leave the browser open. Close the shared Chrome manually only after both providers are idle.
+
+Gemini shared mode stores its runtime separately from independent mode, keyed by the shared profile path. The task journal stays common so replaying a request across modes cannot resend it. Browser operations require the task's original mode and shared profile; cached completed results remain readable.

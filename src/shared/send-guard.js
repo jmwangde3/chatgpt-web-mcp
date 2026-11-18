@@ -67,7 +67,7 @@ export function bootstrapSendGuard() {
         (() => {
           const upload = doc.querySelector('[data-state="uploading"], [data-testid*="upload-progress"]');
           const progress = [...doc.querySelectorAll('[role="progressbar"]')].some(node =>
-            !gemini || binding.region.contains(node) || node.getClientRects().length > 0);
+            !gemini || binding.region.contains(node) || visible(node));
           if (upload || progress) { rejectionReason = 'ACTIVE_UPLOAD_OR_PROGRESS'; return false; }
           return true;
         })() &&

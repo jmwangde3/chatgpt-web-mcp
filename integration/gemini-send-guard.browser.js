@@ -63,7 +63,7 @@ test('formless Gemini region permits exactly one trusted send', async t => {
 test('hidden generic progress outside the Gemini composer does not prevent a trusted send', async t => {
   const { b, page } = await fixture(t);
   await page.locator('file-preview').evaluate(node => node.remove());
-  await page.locator('main').evaluate(node => node.insertAdjacentHTML('beforeend', '<div role="progressbar" style="display:none"></div>'));
+  await page.locator('main').evaluate(node => node.insertAdjacentHTML('beforeend', '<div role="progressbar" style="display:none"></div><div role="progressbar" style="visibility:hidden">Hidden</div>'));
   await b.submitPrompt({ wait: false });
   assert.deepEqual(await page.evaluate(() => [window.sends, window.trusted]), [1, true]);
 });
@@ -161,6 +161,21 @@ test('an interrupted click with unknown outcome preserves the pending attempt', 
   await assert.rejects(b.submitPrompt({ wait: false }), error => error.code !== 'SEND_NOT_ATTEMPTED');
   assert.ok((await b.state()).pending?.attemptId);
   assert.equal(page.isClosed(), true);
+});
+
+test('losing the guard outcome after the application receives the click preserves pending', async t => {
+  const { b, page } = await fixture(t, { persistRuntime: true });
+  const evaluate = page.evaluate.bind(page);
+  page.evaluate = async (...args) => {
+    const result = await evaluate(...args);
+    if (result?.outcome === 'allowed') {
+      assert.equal(await evaluate(() => window.sends), 1);
+      throw new Error('Lost the guard outcome after dispatch');
+    }
+    return result;
+  };
+  await assert.rejects(b.submitPrompt({ wait: false }), /Lost the guard outcome after dispatch/);
+  assert.ok((await b.state()).pending?.attemptId);
 });
 
 test('nested Gemini layout ancestors and empty regions do not create another composer', async t => {

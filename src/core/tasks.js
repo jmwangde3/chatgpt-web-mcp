@@ -16,7 +16,7 @@ const fingerprint = (value) => createHash('sha256').update(JSON.stringify(value)
 const terminal = new Set(['completed', 'cancelled', 'failed', 'abandoned']);
 export function canonicalURL(value) { const u = new URL(value); return u.origin + u.pathname.replace(/\/$/, ''); }
 export function taskView(task) {
-  const { baseline, targetUserMessageId, promptHash, requestHash, fingerprint, progressHash, ...publicFields } = task;
+  const { baseline, targetUserMessageId, promptHash, requestHash, fingerprint, progressHash, taskScope, ...publicFields } = task;
   const progress = {
     ...(publicFields.progress || {
       phase: ['preparing', 'submitting'].includes(task.state) ? 'waiting_for_ack' : 'waiting',
@@ -132,6 +132,11 @@ export class TaskKernel {
     if (!/^[a-z][a-z0-9_-]*:[0-9a-f-]{36}$/.test(taskId)) throw new WebUIError('INVALID_TASK', 'Invalid task_id.');
     const id = taskId.split(':')[0]; this.provider(id); return id;
   }
+  assertTaskScope(task) {
+    if (task.taskScope !== this.provider(task.provider).taskScope) {
+      throw new WebUIError('TASK_BROWSER_SCOPE_CHANGED', 'Use the original Gemini browser mode and profile to operate on this task. Do not resend.');
+    }
+  }
   async readSnapshot(id) {
     this.provider(id);
     const file = path.join(this.directory, id, 'tasks.json');
@@ -189,6 +194,8 @@ export class TaskKernel {
       // from legacy selection. The conversation-identity guard below still
       // prevents two sessions from writing into the same known conversation.
       const task = { task_id: `${id}:${randomUUID()}`, provider: id, ...(session_id ? { session_id } : {}), state: 'preparing', requestHash, fingerprint: payloadHash, promptHash: textHash(prompt), created_at: Date.now(), updated_at: Date.now(), blocking: true, response: null, error: null };
+      const taskScope = this.provider(id).taskScope;
+      if (taskScope !== undefined) task.taskScope = taskScope;
       state.tasks[task.task_id] = task;
       if (session_id) state.version = 2; else state.active = task.task_id;
       await save();
@@ -275,6 +282,7 @@ export class TaskKernel {
       if (!task) throw new WebUIError('TASK_NOT_FOUND', 'Task not found.');
       // Persist a single attempt per task so reconnects never repeat a click.
       if (task.retry_count) return { ...taskView(task), replayed: true };
+      this.assertTaskScope(task);
       const adapter = this.adapter(id, task.session_id);
       if (!adapter.prepareRetry) throw new WebUIError('RETRY_UNSUPPORTED', 'This provider does not support verified response retry.');
       if (task.state !== 'completed' || !task.response?.complete) throw new WebUIError('RETRY_NOT_COMPLETED', 'Retry requires a completed answer, not an uncertain send or running generation.');
@@ -313,6 +321,7 @@ export class TaskKernel {
       if (!task) throw new WebUIError('TASK_NOT_FOUND', 'Task not found.');
       const revalidate = refresh && task.state === 'completed' && !cancel;
       if (terminal.has(task.state) && !revalidate) return taskView(task);
+      this.assertTaskScope(task);
       if (task.state === 'preparing') {
         task.state = 'failed'; task.blocking = false; releaseTask(state, task);
         task.error = { code: 'PREFLIGHT_INTERRUPTED', message: 'Interrupted before sending. No automatic retry.' }; await save(); return taskView(task);
@@ -469,6 +478,7 @@ export class TaskKernel {
       const task = state.tasks[taskId];
       if (!task) throw new WebUIError('TASK_NOT_FOUND', 'Task not found.');
       if (terminal.has(task.state)) return taskView(task);
+      this.assertTaskScope(task);
       if (task.state === 'preparing') {
         task.state = 'failed'; task.blocking = false; releaseTask(state, task);
         task.error = { code: 'PREFLIGHT_INTERRUPTED', message: 'Interrupted before sending. No automatic retry.' }; await save(); return taskView(task);

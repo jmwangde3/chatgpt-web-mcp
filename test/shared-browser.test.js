@@ -5,7 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { BROWSER_STATE_FILE, CHROME_EXECUTABLE, USER_DATA_DIR } from '../src/config.js';
 import { geminiConfig } from '../src/gemini/config.js';
-import { PersistentBrowser } from '../src/shared/persistent-browser.js';
+import { PersistentBrowser, writeState, readState } from '../src/shared/persistent-browser.js';
+import { TaskKernel } from '../src/core/tasks.js';
+import { createHash } from 'node:crypto';
 
 test('shared mode reuses only the ChatGPT browser identity', () => {
   const env = { GEMINI_WEB_DATA_DIR: path.resolve('gemini-fixture') };
@@ -16,9 +18,35 @@ test('shared mode reuses only the ChatGPT browser identity', () => {
   assert.equal(shared.browserState, BROWSER_STATE_FILE);
   assert.equal(shared.executable, CHROME_EXECUTABLE);
   assert.equal(shared.browserLaunchLock, `${BROWSER_STATE_FILE}.launch.lock`);
-  for (const field of ['url', 'runtimeState', 'operationLock', 'taskLock', 'archiveDir']) {
+  assert.notEqual(shared.runtimeState, independent.runtimeState);
+  assert.match(shared.taskScope, /^gemini-shared-[a-f0-9]{64}$/);
+  for (const field of ['url', 'operationLock', 'taskLock', 'archiveDir']) {
     assert.equal(shared[field], independent[field]);
   }
+});
+
+test('changing Gemini browser mode blocks old browser operations but preserves request replay', async context => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'shared-browser-tasks-'));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const file = path.join(directory, 'gemini', 'tasks.json');
+  const task = { task_id: 'gemini:00000000-0000-4000-8000-000000000001', provider: 'gemini',
+    state: 'submitted', blocking: true, requestHash: hash('old'), fingerprint: hash({ prompt: 'same prompt', files: [] }) };
+  const state = { version: 1, active: task.task_id, tasks: { [task.task_id]: task } };
+  await writeState(file, state);
+  const kernel = new TaskKernel([{ id: 'gemini', taskScope: 'shared-profile',
+    browser: { runExclusive: () => assert.fail('must not touch any page') } }],
+  { directory, verifyStoragePaths: async () => {} });
+  for (const operation of [
+    () => kernel.read(task.task_id),
+    () => kernel.read(task.task_id, { cancel: true }),
+    () => kernel.abandon(task.task_id, { confirm: true }),
+    () => kernel.retry(task.task_id),
+  ]) await assert.rejects(operation(), { code: 'TASK_BROWSER_SCOPE_CHANGED' });
+  const replay = await kernel.send({ provider: 'gemini', request_id: 'old', prompt: 'same prompt' });
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.task_id, task.task_id);
+  assert.deepEqual(await readState(file), state);
 });
 
 test('providers serialize browser startup through the same cross-process lock', async context => {
