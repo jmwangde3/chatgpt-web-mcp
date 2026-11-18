@@ -172,3 +172,21 @@ test('cancel and abandon use stable ID despite physical count changes', async t 
     }
   }
 });
+
+test('explicit conversation recovers only the matching completed first turn', async t => {
+  for (const matches of [false, true]) {
+    const f = await fixture(t, { callback: false, errorCode: 'SEND_UNCONFIRMED' });
+    f.adapter.prepare = async () => ({ url: 'https://chatgpt.com', userCount: 0, responseCount: 0,
+      userMessageId: null, responseId: null });
+    f.adapter.send = async () => { throw Object.assign(new Error('confirmation delayed'), { code: 'SEND_UNCONFIRMED' }); };
+    f.adapter.restore = async url => assert.equal(url, f.page.url);
+    const task = await f.kernel.send(f.input);
+    assert.equal((await f.kernel.result(task.task_id)).error.code, 'LEGACY_IDENTITY_UNVERIFIED');
+    Object.assign(f.page, { userCount: 1, responseCount: 1, userMessageId: 'new-user',
+      responseId: 'new-answer', lastUser: matches ? f.input.prompt : 'another prompt' });
+    const result = await f.reconnect().result(task.task_id, { conversation_url: f.page.url });
+    assert.equal(result.state, matches ? 'completed' : 'uncertain');
+    assert.equal((await saved(f, task)).targetUserMessageId, matches ? 'new-user' : undefined);
+    assert.equal(f.controls.length, matches ? 1 : 0);
+  }
+});

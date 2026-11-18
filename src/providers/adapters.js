@@ -72,14 +72,14 @@ export function chatgptProvider(browser) {
     async send({ prompt, files, beforeSubmit, baseline, managedTaskId, onIdentityConfirmed }) {
       if (files.length) await browser.uploadFiles(files);
       await browser.writePrompt(prompt);
-      const sent = await browser.submitPrompt({ wait: false, refresh: false, beforeSubmit, baseline, managedTaskId, onIdentityConfirmed });
+      const sent = await browser.submitPrompt({ wait: false, refresh: false, beforeSubmit, baseline, managedTaskId, expectedPromptHash: textHash(prompt), onIdentityConfirmed });
       // Keep submission locked briefly so the permanent conversation URL can
       // be recorded and checked against the expected user turn.
       if (browser.waitForConversationURL) sent.url = await browser.waitForConversationURL();
       return sent;
     },
-    async inspect() {
-      const s = await browser.getLatestResponse({ includeTranscript: false, includeIdentityCandidates: true, skipGenerationRelease: true });
+    async inspect({ recovery } = {}) {
+      const s = await browser.getLatestResponse({ includeTranscript: false, includeIdentityCandidates: true, skipGenerationRelease: true, recovery });
       // A persisted breaker gates actions, not observation. The task kernel still
       // verifies the conversation and exact user turn before accepting this text.
       const readableAnswer = !!s.response && !s.generating && !classifyRateLimitText(s.response).limited;

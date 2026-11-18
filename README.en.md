@@ -160,6 +160,28 @@ codex mcp add chatgpt-web -- node /absolute/path/to/chatgpt-web-mcp/src/index.js
 
 See the [official OpenAI MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) for Codex MCP configuration concepts.
 
+### MCP JSON configuration (Windows)
+
+For clients that use a `mcpServers` JSON configuration, copy this example and replace both absolute paths. If `mcpServers` already exists, add the `chatgpt-web` entry to it. Reconnect the MCP server after saving. For Codex, use the `codex mcp add` command above.
+
+```json
+{
+  "mcpServers": {
+    "chatgpt-web": {
+      "command": "C:\\path\\to\\node.exe",
+      "args": [
+        "C:\\path\\to\\chatgpt-web-mcp\\src\\index.js"
+      ],
+      "env": {
+        "CHATGPT_WEB_MCP_TOOLSET": "unified"
+      }
+    }
+  }
+}
+```
+
+The example enables the unified `chat_*` tools. Set `CHATGPT_WEB_MCP_TOOLSET` to `full` if you need the legacy `chatgpt_*` or `gemini_*` tools.
+
 ## CLI
 
 ```text
