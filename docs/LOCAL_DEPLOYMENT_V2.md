@@ -1,3 +1,5 @@
+> **Historical snapshot:** this document records an earlier full/unified toolset deployment. It is retained as historical evidence; the current Web-First patch supersedes its MCP tool-count and configuration descriptions with exactly four tools.
+
 # V2 本机部署与使用验收
 
 日期：2026-11-17（香港时间）。结论：**本机限定范围 PASS，可以开始日常受监督使用**；不代表全部权限故障、模型上下文极限或生产可靠性均已验收。

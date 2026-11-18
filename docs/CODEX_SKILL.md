@@ -1,118 +1,86 @@
-# Codex: MCP + web-chat Skill
+# Codex：Web-First MCP + Skill 安装与使用
 
-本仓库同时提供网页操作工具和专家咨询工作流：
+本项目将网页 ChatGPT 作为默认思考与决策层，本地 Codex 作为证据收集、编辑和执行层。MCP 固定只注册四个工具：`chat_send`、`chat_result`、`chat_history`、`chat_doctor`。取消 `full/unified` 配置，不保留旧 MCP 工具集兼容分支。
 
-```text
-src/                              MCP 服务：网页、附件、任务与结果
-skills/web-chat/SKILL.md           Agent 专家咨询工作流
-skills/web-chat/agents/openai.yaml Skill 名称、提示词与 MCP 依赖
-```
+## 1. 安装与注册 MCP
 
-Skill 不包含浏览器登录信息、任务日志或个人聊天内容。安装 Skill 不会自动注册 MCP，也不会自动向网页发送资料。
+需要 Node.js 20+、npm、Git、Chrome/Edge，以及支持 stdio MCP 的 Codex。
 
-Skill 默认咨询 **ChatGPT GPT-6 + 高**；用户指定其他平台或设置时优先遵从。ChatGPT 的 `chat_send` 在模型、思考强度和回答档位均省略时选择并复核默认值；显式模型或强度的另一项保留当前设置，显式回答档位不套用默认值，无法核验时停止发送。Gemini 设置不受此底层默认影响。本仓库协作偏好网页 GPT-6 高思考、Codex 6.1 Terra medium 执行，MCP 不切换宿主模型或自动委派。升级后需重连 MCP；仓库内 Skill 的修改不会自动安装到技能中心。
-
-MCP 0.7.5+ 还提供 `chat_retry({task_id})`：Skill 判断 Gemini 的完整回答是拒答时，在原回答上点击一次 Redo／重试，再以原任务编号等待新回答。每个任务最多一次，重连或重复调用不会重复点击；原回复保存在 `previous_response`。再次拒答时报告结果，不循环重试或新发同一问题。该接口当前不支持 ChatGPT，也不重试状态不明、限流或仍在运行的任务。
-
-## 1. 获取代码 / Get the repository
-
-需要 Node.js 20+、npm、Git、Chrome 或 Edge，以及支持本地 MCP 和 Skill 的 Codex 客户端。
-
-```sh
-git clone https://github.com/Tw6249/chatgpt-web-mcp.git
-cd chatgpt-web-mcp
+```powershell
 npm ci
+node src/cli.js doctor
+node src/cli.js login --provider chatgpt
 ```
 
-已有源码时在合适的分支更新代码；已有可用 MCP 时直接跳到第 3 步。
+需要 Gemini 时再单独登录：
 
-## 2. 注册 MCP / Register the MCP
+```powershell
+node src/cli.js login --provider gemini
+```
 
-推荐使用 [托管安装](COMPARISONS_AND_INSTALL.md#setup-and-the-stable-mcp-entry-point)：
+推荐使用项目 CLI 管理入口：
 
-```sh
+```powershell
 node src/cli.js setup
 ```
 
-将输出的 `command` 和 `args` 注册为 **`web-chat`**，对应 Skill 的 MCP 依赖名称。默认固定入口是 `~/.web-chat-mcp/install/launch.mjs`；自定义安装目录时以 setup 的输出为准。setup 不会自动改写 Codex 配置。
-
-例如在 Windows PowerShell 中，使用默认安装目录和 PATH 中的 Node：
+按 setup 输出注册 `web-chat` MCP。已有配置时检查并沿用，不重复创建服务。也可直接配置项目绝对路径：
 
 ```powershell
-$launcher = Join-Path $HOME '.web-chat-mcp/install/launch.mjs'
-codex mcp add web-chat -- node $launcher serve
+codex mcp add web-chat -- node "C:\path\to\chatgpt-web-mcp\src\index.js"
 codex mcp get web-chat
 ```
 
-macOS / Linux：
+保存后重连 MCP 客户端。登录只在专用浏览器窗口手动完成，不把密码、Cookie 或验证码写入配置。
 
-```sh
-codex mcp add web-chat -- node "$HOME/.web-chat-mcp/install/launch.mjs" serve
-codex mcp get web-chat
-```
+## 2. 安装 Skill
 
-如果桌面客户端不能从 PATH 找到 Node，将 `node` 替换为 Node 可执行文件的绝对路径。也可以将相同的 `command`、`args` 写入 Codex 配置的 `[mcp_servers.web-chat]`。已有该条目时检查并沿用，不重复添加。
+将整个 `skills/web-chat` 目录复制到 Codex Skill 根目录：默认 `%USERPROFILE%\.codex\skills\web-chat`；设置 `CODEX_HOME` 时使用 `$env:CODEX_HOME\skills\web-chat`。先备份已有同名 Skill，确认只有一个发现入口。安装后重开聊天，必要时重启客户端。
 
-使用固定入口完成所需平台的登录，例如 Windows PowerShell：
+仓库内 `skills/web-chat/agents/openai.yaml` 设置 `policy.allow_implicit_invocation: true`。它允许宿主根据任务自动调用 Skill；触发仍由宿主的 Skill 匹配决定，不是 MCP 代码级强制路由。因此 `AGENTS.md` 也写明了项目 Web-First 默认规则，避免只依赖 Skill 描述。
+
+## 3. 默认协作方式
+
+- 需求理解、研究、架构、设计、技术选型、根因分析、调试决策和实施规划：先由 ChatGPT Web 处理。
+- 本地 Agent 可以先收集最少必要事实，但不得先完成实质设计再把网页当作审阅者。
+- ChatGPT Web 应给出可执行的逐文件 Implementation Spec；本地 Agent 按规格修改、测试并汇报证据。
+- 纯命令、明确指定的测试、Git status/diff、指定文件读取和简单机械修改可本地直执行。用户明确要求仅本地时优先。
+
+## 4. 四个 MCP 工具
+
+| 工具 | 用途 |
+|---|---|
+| `chat_send` | 默认 ChatGPT，提交一次任务并返回 `task_id`；明确要求 Gemini 时传 `provider: "gemini"` |
+| `chat_result` | 默认 `wait=true`、`timeoutMs=90000`；继续读取原任务，不重发 |
+| `chat_history` | 读取指定 provider/session 的历史，注意结果可能不含未加载历史 |
+| `chat_doctor` | 本地诊断，不打开浏览器、不验证网页登录 |
+
+不再存在 `chat_new`、`chat_models`、`chat_select_model`、`chat_cancel`、`chat_tasks`、`chat_status`、`chat_retry`、`chat_archive` 等 MCP 工具。取消、任务列表、放弃跟踪、登录、诊断和安装维护通过 CLI 管理；模型发现/选择不提供 MCP 或 CLI 的通用替代命令。
+
+## 5. 会话、幂等与等待
+
+同一项目复用稳定 `session_id`，例如 `project_chatgpt_web_mcp`。新逻辑请求生成新 `request_id`；同一请求恢复时必须保持完整 payload 不变并使用原 `request_id`。提交成功后保存原 `task_id`。任何超时、断连或 pending 都只读取原 `task_id`，不生成新编号重发。
+
+每个逻辑任务最多自动观察 20 分钟。每次 `chat_result` 默认使用 `wait=true`、`timeoutMs=90000`；最后一段按总预算剩余时间缩短（最小 1000ms）。达到单次观察预算后，若仍是 `submitted/running`，在总预算内继续读取原任务。`stalled` 只表示一段时间没有可见文本变化，不代表失败。达到 20 分钟后停止自动等待，保留任务并报告原 `task_id`；用户要求继续时再恢复。停止等待不等于取消生成。
+
+只有用户明确要求取消时，才执行：
 
 ```powershell
-node $launcher login --provider chatgpt
-# 使用 Gemini 时：
-node $launcher login --provider gemini
+node src/cli.js cancel <task_id>
 ```
 
-macOS / Linux 将 `$launcher` 替换为 `"$HOME/.web-chat-mcp/install/launch.mjs"`。按浏览器提示手动登录；不要将密码或 Cookie 写入配置。新连接需要重新加载 MCP。源代码、托管安装和正在运行的 MCP 可能是不同版本，更新代码本身不会切换已运行的服务。
-
-## 3. 安装 Skill / Install the skill
-
-将本仓库的 **整个 `skills/web-chat` 目录**复制到 Codex 的技能目录。默认是 `~/.codex/skills`；设置了 `CODEX_HOME` 时使用 `$CODEX_HOME/skills`。下面命令都从仓库根目录执行，目标已存在时先备份。
-
-Windows PowerShell：
+其他管理命令：
 
 ```powershell
-$codexDir = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
-$skillsDir = Join-Path $codexDir 'skills'
-$destination = Join-Path $skillsDir 'web-chat'
-New-Item -ItemType Directory -Path $skillsDir -Force | Out-Null
-if (Test-Path -LiteralPath $destination) {
-    $backupDir = Join-Path $codexDir ('skill-backups/web-chat-' + [guid]::NewGuid().ToString())
-    New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
-    Copy-Item -LiteralPath $destination -Destination $backupDir -Recurse
-    Copy-Item -Path './skills/web-chat/*' -Destination $destination -Recurse -Force
-} else {
-    Copy-Item -LiteralPath './skills/web-chat' -Destination $destination -Recurse
-}
+node src/cli.js tasks --provider all --state uncertain
+node src/cli.js result <task_id> --wait --timeout 90000
+node src/cli.js abandon <task_id> --confirm
 ```
 
-macOS / Linux：
+`abandon` 只能在用户已检查原网页空闲并明确授权后使用。它不撤销发送，也不证明回答完成。
 
-```sh
-codex_dir="${CODEX_HOME:-$HOME/.codex}"
-skills_dir="$codex_dir/skills"
-mkdir -p "$skills_dir"
-if [ -e "$skills_dir/web-chat" ]; then
-  mkdir -p "$codex_dir/skill-backups"
-  backup_dir="$(mktemp -d "$codex_dir/skill-backups/web-chat.XXXXXX")"
-  cp -R "$skills_dir/web-chat" "$backup_dir/"
-fi
-mkdir -p "$skills_dir/web-chat"
-cp -R ./skills/web-chat/. "$skills_dir/web-chat/"
-```
+## 6. 数据边界与验收
 
-备份位于技能发现目录之外，避免出现同名 Skill。更新时先检查自己的定制；上述复制会替换仓库提供的同名文件。MCP 的 `upgrade`/`rollback` 不会自动更新或回滚已复制的 Skill，更新 Skill 时需再次复制。
+只发送当前任务必要的摘要、代码摘录、diff 和明确授权文件；不自动上传整个工作区或秘密。MCP 不可用、未登录或任务不确定时，报告阻碍并保留任务，不静默由本地 Agent 接管设计。
 
-重新打开聊天；如果技能列表未刷新，再重启客户端。可在支持的技能选择菜单中搜索 **web-chat 网页专家**，或直接输入 `$web-chat`。菜单展示取决于客户端，MCP 工具可用和 Skill 入口可见是两项独立检查。
-
-## 4. 使用 / Use
-
-```text
-使用 $web-chat，把当前问题和相关背景交给 ChatGPT 专家，等待完整回答后继续处理。
-
-使用 $web-chat，请 Gemini 审阅我为本次咨询提供的文件，取得完整意见后改进方案。
-```
-
-The skill defaults to ChatGPT GPT-6 + 高 unless the user selects another provider or setting. The MCP verifies the default before sending. It collects relevant context and authorized attachments, submits once with a stable request ID, waits with `chat_result`, and uses the complete expert answer to continue the original task. A timeout resumes the existing task instead of sending again. File access alone is not upload authorization, and the skill never silently switches providers.
-
-本仓库版本支持 `session_id`，不同任务可隔离标签页；旧版 MCP 则使用原会话接口。Skill 按运行时工具声明选择参数。网页登录、验证码、限流、不可读取的附件或不确定发送状态仍可能需要用户处理，Skill 不会冒称已成功完成。
-
-验证时分别检查：`codex mcp get web-chat` 能读取配置；新聊天能发现 Skill 和 MCP 工具；`chat_providers` 能列出平台。只有一次实际授权的网页咨询完成后，才说明端到端网页流程已验证。
+更新后重连 MCP，确认 `tools/list` 恰好返回四个名称。运行 `npm run smoke` 可自动检查工具数量、名称和默认参数。端到端网页验证需要用户授权后实际发送一次合成请求；工具发现通过不等于真实网页生成已验证。

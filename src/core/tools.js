@@ -1,42 +1,132 @@
 import { z } from 'zod';
 import { diagnose } from './diagnostics.js';
-import { Comparisons } from './comparisons.js';
 import { safeControlDiagnostics } from '../shared/browser-diagnostics.js';
 
-export function registerUnifiedTools(server, kernel) {
-  const provider = z.enum([...kernel.providers.keys()]);
-  const session_id = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/).optional().describe('Stable caller-chosen session name. Different names use independent tabs and can generate concurrently; reuse the same name for follow-ups. Omit for the legacy tab.');
-  const comparisons = new Comparisons(kernel);
-  const tool = (name, description, schema, handler) => server.registerTool(name, { description, inputSchema: Object.keys(schema).length ? z.strictObject(schema) : schema }, async (input, extra) => {
-    try { return { content: [{ type: 'text', text: JSON.stringify(await handler(input, extra.signal), null, 2) }] }; }
-    catch (error) { return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: error.code || 'CHAT_ERROR', error: error.message, ...(error.safeDiagnostics ? { diagnostics: safeControlDiagnostics(error.safeDiagnostics) } : {}) }) }] }; }
-  });
-  const run = (id, method, args, signal, readOnly = false, sessionId) => kernel.run(id, (browser) => browser[method](...args), { signal, readOnly, sessionId, conversationChanged: ['newChat', 'selectHistory'].includes(method), name: `chat_${method}` });
-  tool('chat_compare', 'Send the same question to 2..6 explicitly authorized provider/model targets in fresh conversations. Discover exact names with chat_models first. Providers run independently; models on one provider run sequentially. Reuse identical input and request_id to resume unsent targets. Each answer stays separate; no automatic judge or synthesis.', { request_id: z.string().min(1).max(128), prompt: z.string().min(1), targets: z.array(z.strictObject({ provider, model: z.string().min(1) })).min(2).max(6), timeoutMs: z.number().int().min(1000).max(300000).default(30000) }, (i, signal) => comparisons.run(i, { signal }));
-  tool('chat_compare_result', 'Observe comparison children without sending or changing models. Returns each target response, task state and recovery guidance separately.', { comparison_id: z.string() }, (i, signal) => comparisons.result(i.comparison_id, { signal }));
-  tool('chat_providers', 'List installed providers and their supported capabilities. No browser access.', {}, async () => ({ providers: [...kernel.providers.values()].map(({ id, capabilities }) => ({ id, capabilities })) }));
-  tool('chat_doctor', 'Inspect local executable, runtime and task-journal health. Does not open a browser or verify sign-in. Report excludes paths, conversation URLs, task IDs, responses and raw errors.', { provider: provider.optional() }, (i) => diagnose(kernel, i.provider ? [i.provider] : undefined));
-  tool('chat_status', 'Read the selected session page and local managed-task state. Optional include_messages returns rendered ChatGPT messages or the latest Gemini answer, including manual follow-ups, for read-only inspection. It neither acknowledges nor releases a task.', { provider, session_id, include_messages: z.boolean().default(false) }, async (i, signal) => {
-    const status = await run(i.provider, 'status', [], signal, true, i.session_id);
-    const observed = i.include_messages ? await run(i.provider, 'getLatestResponse', [i.provider === 'gemini' ? { wait: false } : { includeTranscript: false }], signal, true, i.session_id) : undefined;
-    if (observed && i.provider === 'chatgpt') observed.rendered_messages = await run(i.provider, 'renderedConversationMessages', [{ includeRawText: true }], signal, true, i.session_id);
-    const tasks = await kernel.list(i.provider, 1);
-    return { ...status, ...(observed ? { observed } : {}), session_id: i.session_id || null, ...tasks,
-      active_task: tasks.active_tasks.find(t => (t.session_id || null) === (i.session_id || null))?.task_id || null };
-  });
-  tool('chat_models', 'List names actually available on the selected provider session. Model names are provider-specific.', { provider, session_id }, (i, s) => run(i.provider, 'listModels', [], s, false, i.session_id));
-  tool('chat_select_model', 'Select and verify an exact available model name. For Gemini, extended_thinking=true verifies High on level menus or enables the legacy Extended thinking toggle; false verifies Low or disables the toggle. Returns the observed thinkingLevel.', { provider, session_id, model: z.string().min(1), extended_thinking: z.boolean().optional() }, (i, s) => {
-    if (i.extended_thinking !== undefined && i.provider !== 'gemini') throw Object.assign(new Error('extended_thinking is supported only for Gemini.'), { code: 'INVALID_ARGUMENT' });
-    return run(i.provider, 'selectModel', [i.model, { extended_thinking: i.extended_thinking }], s, false, i.session_id);
-  });
-  tool('chat_new', 'Create a conversation in the selected session. Other sessions are unaffected. Tasks and drafts in this session prevent unsafe switching.', { provider, session_id }, (i, s) => run(i.provider, 'newChat', [], s, false, i.session_id));
-  tool('chat_send', 'Submit once and return a durable task_id. Distinct sessions allow concurrent answers. Reuse the SAME request_id and content after a timeout; replay never resends. Files require authorization. Gemini existing_draft=true explicitly submits only a matching prompt and exact attachment list, without rewriting or reuploading. Use only after inspecting a known unsent draft; an uncertain task still requires authorized recovery first. ChatGPT defaults to GPT-6 and 高 only when model, thinking_level, and answer_tier are omitted; explicit settings take precedence and are verified before sending.', { provider, session_id, request_id: z.string().min(1).max(128), prompt: z.string().min(1), files: z.array(z.string().min(1)).max(10).default([]), model: z.string().min(1).optional(), thinking_level: z.string().min(1).optional(), answer_tier: z.string().min(1).optional(), web_search: z.boolean().default(false), existing_draft: z.boolean().default(false) }, (i, signal) => kernel.send(i, { signal }));
-  tool('chat_result', 'Read/resume a durable task without sending. Named sessions restore the saved conversation. Completed answers are cached unless refresh=true explicitly revalidates the latest task in that session. For an unbound uncertain send, supply an observed conversation_url; its user turn must match before binding. Never resend uncertain work.', { task_id: z.string(), wait: z.boolean().default(false), refresh: z.boolean().default(false), conversation_url: z.string().url().optional(), timeoutMs: z.number().int().min(1000).max(300000).default(30000) }, (i, signal) => kernel.result(i.task_id, { ...i, signal }));
-  tool('chat_cancel', 'Cancel ONLY the generation belonging to this task, after verifying conversation and prompt identity. A completed task stays completed. If cancellation cannot be confirmed, the reservation remains.', { task_id: z.string() }, (i, signal) => kernel.read(i.task_id, { signal, cancel: true }));
-  tool('chat_retry', 'Click the original completed answer retry control once after the caller reviews a refusal and has user authorization. Currently Gemini only. Keeps the same task and prompt; never sends a duplicate user message. Repeated calls recover the single attempt without clicking again. Continue with chat_result; no retry for running, uncertain, superseded or rate-limited work.', { task_id: z.string() }, (i, signal) => kernel.retry(i.task_id, { signal }));
-  tool('chat_tasks', 'List local task metadata without opening a browser or exposing prompt text. Supports state filtering and offset pagination; results include total and next_offset.', { provider, limit: z.number().int().min(1).max(100).default(20), offset: z.number().int().min(0).default(0), state: z.enum(['preparing', 'submitting', 'submitted', 'running', 'uncertain', 'completed', 'cancelled', 'failed', 'abandoned']).optional() }, (i) => kernel.list(i.provider, i.limit, i));
-  tool('chat_abandon', 'Explicit recovery after inspecting an uncertain task: release local tracking only when the original page is idle. Does not undo delivery or clear drafts. Requires user authorization; never call automatically after a timeout. The same request_id will still never resend.', { task_id: z.string(), confirm: z.literal(true) }, (i, signal) => kernel.abandon(i.task_id, { confirm: i.confirm, signal }));
-  tool('chat_history', 'List provider conversation history; inspect the returned scope/completeness information.', { provider, session_id, query: z.string().default(''), limit: z.number().int().min(1).max(50).default(20) }, (i, s) => run(i.provider, 'listHistory', [{ query: i.query, limit: i.limit }], s, false, i.session_id));
-  tool('chat_open', 'Open a provider conversation URL in the selected session. Refuses to switch away from its managed task.', { provider, session_id, url: z.string().url() }, (i, s) => run(i.provider, 'selectHistory', [i.provider === 'chatgpt' ? { url: i.url } : i.url], s, false, i.session_id));
-  tool('chat_archive', 'Explicitly export the selected session conversation to local Markdown. Provider-specific history completeness is preserved.', { provider, session_id }, (i, s) => run(i.provider, 'archiveConversation', [], s, false, i.session_id));
+function createProgressNotifier(extra) {
+  const progressToken = extra?._meta?.progressToken;
+  const sendNotification = extra?.sendNotification;
+  if (progressToken === undefined || progressToken === null || typeof sendNotification !== 'function') return undefined;
+
+  let sequence = 0;
+  let lastKey = null;
+  let lastSentAt = 0;
+  let queue = Promise.resolve();
+
+  return (progress, task) => {
+    if (!progress) return;
+    const phase = progress.phase || task?.state || 'waiting';
+    const responseChars = Number.isFinite(progress.response_chars) ? progress.response_chars : 0;
+    const key = `${phase}:${responseChars}`;
+    const now = Date.now();
+    if (key === lastKey && now - lastSentAt < 30_000) return;
+
+    lastKey = key;
+    lastSentAt = now;
+    sequence += 1;
+    const elapsedMs = Number.isFinite(task?.created_at) ? Math.max(0, now - task.created_at) : 0;
+    const notification = {
+      method: 'notifications/progress',
+      params: {
+        progressToken,
+        progress: sequence,
+        message: `phase=${phase}; elapsed_ms=${elapsedMs}; response_chars=${responseChars}`,
+      },
+    };
+
+    // Transport writes are serialized so sequence numbers cannot overtake.
+    // Notification failures must never fail or delay the underlying task.
+    queue = queue.then(() => sendNotification(notification)).catch(() => {});
+  };
+}
+
+export function registerWebFirstTools(server, kernel) {
+  const providerNames = [...kernel.providers.keys()];
+  if (!providerNames.includes('chatgpt')) throw new Error('The ChatGPT provider is required for the default chat_send route.');
+  const provider = z.enum(providerNames).default('chatgpt');
+  const session_id = z.string()
+    .regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/)
+    .optional()
+    .describe('Stable caller-chosen project session. Reuse it for follow-ups; use a different value for an independent conversation.');
+
+  const tool = (name, description, schema, handler) => server.registerTool(
+    name,
+    { description, inputSchema: z.strictObject(schema) },
+    async (input, extra = {}) => {
+      try {
+        return { content: [{ type: 'text', text: JSON.stringify(await handler(input, extra.signal, extra), null, 2) }] };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              code: error.code || 'CHAT_ERROR',
+              error: error.message,
+              ...(error.safeDiagnostics ? { diagnostics: safeControlDiagnostics(error.safeDiagnostics) } : {}),
+            }),
+          }],
+        };
+      }
+    },
+  );
+
+  // The public MCP surface is intentionally fixed at four tools.
+  // Provider-specific lifecycle and recovery operations remain available via CLI.
+  tool(
+    'chat_send',
+    'Primary Web-First reasoning entry. Use for substantive analysis, research, architecture, design, technical choices, root-cause analysis, debugging strategy and implementation planning before local agents make design decisions. Returns a durable task_id after one submission. Reuse a stable session_id per project and a new request_id per new logical request. After uncertainty, replay only the exact same request_id and payload; never create a replacement send. Provider defaults to ChatGPT; choose Gemini only when explicitly requested. ChatGPT defaults to GPT-6 + 高 when model, thinking_level and answer_tier are omitted.',
+    {
+      provider,
+      session_id,
+      request_id: z.string().min(1).max(128),
+      prompt: z.string().min(1),
+      files: z.array(z.string().min(1)).max(10).default([]),
+      model: z.string().min(1).optional(),
+      thinking_level: z.string().min(1).optional(),
+      answer_tier: z.string().min(1).optional(),
+      web_search: z.boolean().default(false),
+      existing_draft: z.boolean().default(false),
+    },
+    (input, signal) => kernel.send(input, { signal }),
+  );
+
+  tool(
+    'chat_result',
+    'Read or resume an existing durable task; this tool never sends a prompt. Defaults to wait=true and a 90-second observation slice. timed_out means only that this observation slice ended; it does not mean generation failed or was cancelled. Continue with the same task_id within the caller’s bounded total wait budget. Never resend uncertain work. CONTROL_BUSY is retried read-only inside the same slice only when the server confirms it occurred before the settlement boundary. If the slice ends with retryable_observation=true, the caller may open another slice for the same task_id within its total wait budget.',
+    {
+      task_id: z.string(),
+      wait: z.boolean().default(true),
+      refresh: z.boolean().default(false),
+      conversation_url: z.string().url().optional(),
+      timeoutMs: z.number().int().min(1_000).max(300_000).default(90_000),
+    },
+    (input, signal, extra) => kernel.result(input.task_id, {
+      ...input,
+      signal,
+      onProgress: createProgressNotifier(extra),
+    }),
+  );
+
+  tool(
+    'chat_history',
+    'Read conversation history for the selected provider/session. Results include provider-specific scope and completeness information; do not assume unloaded history is complete. This is read-only and does not create, switch or send a conversation.',
+    {
+      provider,
+      session_id,
+      query: z.string().default(''),
+      limit: z.number().int().min(1).max(50).default(20),
+    },
+    (input, signal) => kernel.run(
+      input.provider,
+      browser => browser.listHistory({ query: input.query, limit: input.limit }),
+      { signal, readOnly: true, sessionId: input.session_id, name: 'chat_history' },
+    ),
+  );
+
+  tool(
+    'chat_doctor',
+    'Inspect local executable, runtime, browser discovery and task-journal health. This is local-only: it does not open a browser, verify website sign-in, or send a message.',
+    { provider: z.enum(providerNames).optional() },
+    input => diagnose(kernel, input.provider ? [input.provider] : undefined),
+  );
 }

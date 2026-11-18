@@ -8,7 +8,10 @@ export function recoveryFor(task) {
   if (code === 'CONVERSATION_CHANGED') return { action: 'return_to_conversation', automatic_retry: false, message: 'Manually open the saved conversation in the dedicated browser, then call chat_result.' };
   if (code === 'RATE_LIMITED') return { action: 'wait_for_manual_recovery', automatic_retry: false, message: 'Do not resend. Inspect the original page; a completed ChatGPT answer can be read with chat_result without clearing the breaker. New actions require confirmed recovery before clearing the circuit breaker.' };
   if (code === 'LOGIN_REQUIRED') return { action: 'manual_login', automatic_retry: false, message: 'Sign in manually in the dedicated browser, then resume this task. Never provide credentials to a tool.' };
-  if (code === 'CONTROL_BUSY') return { action: 'chat_result', retry_after_ms: 5000, automatic_retry: false, message: 'The prior control connection is still closing. Wait briefly and read the same task_id; if it remains busy, reconnect and read the same task. Do not resend.' };
+  if (code === 'CONTROL_BUSY') {
+    if (task.error?.retryable_observation === true) return { action: 'chat_result', retry_after_ms: 5000, automatic_retry: false, message: 'wait=true retries this read-only controller-cleanup condition within the same timeoutMs budget. If it remains busy after the observation budget, reconnect and read the same task_id. Never resend.' };
+    return { action: 'inspect_page', automatic_retry: false, message: 'The controller became busy after result reconciliation crossed its settlement boundary. Do not automatically repeat the operation. Reconnect MCP, inspect the original task page, then resume the same task_id if its state is clear.' };
+  }
   if (code === 'RESULT_TIMEOUT') return { action: 'chat_result', automatic_retry: false, message: 'The observation budget expired. Read the same task_id with chat_result; this does not resend or confirm completion.' };
   if (task.state === 'uncertain') return { action: 'inspect_page', automatic_retry: false, message: 'Inspect the original page, then call chat_result. Do not resend with a new request_id. Abandon tracking only after explicit user authorization.' };
   return { action: 'chat_result', automatic_retry: false, message: 'Resume observation with this task_id. A wait timeout does not cancel or resend the task.' };

@@ -2,25 +2,27 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { readFileSync } from 'node:fs';
-import { mcpToolset } from './config.js';
 import { createRuntime } from './core/runtime.js';
-import { registerChatGPTTools } from './providers/chatgpt-tools.js';
-import { chatgptInstructions } from './providers/chatgpt-policy.js';
-import { registerGeminiTools } from './gemini/tools.js';
-import { registerUnifiedTools } from './core/tools.js';
+import { registerWebFirstTools } from './core/tools.js';
 
-const toolset = mcpToolset();
 const runtime = createRuntime();
-const { chatgpt, gemini, kernel } = runtime;
+const { kernel } = runtime;
 const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const server = new McpServer({ name: 'web-chat', version }, {
-  instructions: toolset === 'unified' ? 'Use chat_send with a stable request_id and chat_result with task_id for durable ChatGPT/Gemini work. Reusing request_id never resends; changed content conflicts. Use independent session_id values for independent conversations and reuse them for follow-ups. On timeouts read the original task_id; never resend uncertain work. Discover current models with chat_models and providers with chat_providers. Selected authorized files can be attached through chat_send. Unified tools cover managed tasks, sessions, models, comparisons, cancellation, history and loaded-conversation archiving. Provider-specific browser lifecycle, routing probes, standalone draft edits and diagnostics require the full toolset. Browser sessions remain open and account rate limits stay shared. Never route user data to another provider without authorization.' : 'For durable work, use chat_send with a stable request_id, then chat_result with task_id. For independent simultaneous tasks on one provider, use a different session_id for each conversation; reuse it for follow-ups. Each session owns a persistent browser tab. Reusing a request_id never resends. Never route user data to another provider without authorization. Browser sessions remain open and account rate limits stay shared. Legacy provider tools use the unmanaged tab and cannot mutate a page reserved by its managed task. The following routing guidance applies to legacy chatgpt_* tools: ' + chatgptInstructions(),
+  instructions: [
+    'This MCP intentionally exposes exactly four tools: chat_send, chat_result, chat_history and chat_doctor.',
+    'Web-First: use chat_send before local agents make substantive decisions about requirements, research, architecture, design, technical choices, root causes or implementation plans. Local agents gather minimum necessary facts, execute the returned specification and verify it.',
+    'chat_send defaults to the ChatGPT provider; use Gemini only when explicitly requested. Reuse one stable session_id per project and use a new request_id for each new logical request.',
+    'chat_result defaults to wait=true with a 90-second observation slice. A timeout is not task failure or cancellation. If a slice ends with retryable_observation=true, another slice may resume the same task_id within the 20-minute agent budget; never resend uncertain work.',
+    'The total automatic observation budget is an agent-side limit of 20 minutes per logical task. Reaching it stops waiting only; it does not cancel or release the browser task.',
+    'Provider-specific lifecycle, cancellation, task listing and maintenance are intentionally not MCP tools; use the documented CLI commands when needed. Model discovery and selection are intentionally not provided through MCP or a generic CLI replacement.',
+    'Never upload an entire workspace, credentials, cookies, tokens or unrelated private data. Send only the minimum context and explicitly authorized files.',
+    'Browser sessions remain open and provider rate limits are shared. Never route user data to another provider without authorization.',
+  ].join(' '),
 });
-registerUnifiedTools(server, kernel);
-if (toolset === 'full') {
-  registerChatGPTTools(server, chatgpt, kernel);
-  registerGeminiTools(server, gemini, kernel);
-}
+
+registerWebFirstTools(server, kernel);
+
 let shuttingDown = false;
 const shutdown = async () => {
   if (shuttingDown) return;

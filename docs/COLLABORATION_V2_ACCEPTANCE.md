@@ -1,3 +1,5 @@
+> **Historical snapshot:** this document records an earlier full/unified toolset deployment. It is retained as historical evidence; the current Web-First patch supersedes its MCP tool-count and configuration descriptions with exactly four tools.
+
 # ChatGPT Web × Codex 协作体系 V2.0 · 实施与验收报告
 
 日期：2026-11-17。审查分支：`review/chatgpt-collaboration-v2`；[草稿PR #1](https://github.com/jmwangde3/chatgpt-web-mcp/pull/1)。

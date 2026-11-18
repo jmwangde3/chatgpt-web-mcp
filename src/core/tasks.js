@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { acquireLock, readState, writeState, WebUIError } from '../shared/persistent-browser.js';
 import { safeControlDiagnostics } from '../shared/browser-diagnostics.js';
 import { recoveryFor } from './recovery.js';
+import { updateTaskProgress, nextPollDelayMs } from './progress.js';
 import { validateSessionId } from '../shared/sessions.js';
 import { textHash, matchesUserPrompt } from '../shared/user-message-identity.js';
 import { verifyDataPaths } from '../shared/data-security.js';
@@ -15,8 +16,17 @@ const fingerprint = (value) => createHash('sha256').update(JSON.stringify(value)
 const terminal = new Set(['completed', 'cancelled', 'failed', 'abandoned']);
 export function canonicalURL(value) { const u = new URL(value); return u.origin + u.pathname.replace(/\/$/, ''); }
 export function taskView(task) {
-  const { baseline, targetUserMessageId, promptHash, requestHash, fingerprint, ...publicFields } = task;
-  return { ...publicFields, recovery: recoveryFor(task) };
+  const { baseline, targetUserMessageId, promptHash, requestHash, fingerprint, progressHash, ...publicFields } = task;
+  const progress = {
+    ...(publicFields.progress || {
+      phase: ['preparing', 'submitting'].includes(task.state) ? 'waiting_for_ack' : 'waiting',
+      response_chars: typeof task.response?.text === 'string' ? Array.from(task.response.text).length : 0,
+      last_progress_at: task.submitted_at ?? task.updated_at ?? task.created_at ?? null,
+      no_progress_ms: null,
+    }),
+    ...(terminal.has(task.state) ? { phase: task.state } : {}),
+  };
+  return { ...publicFields, progress, recovery: recoveryFor(task) };
 }
 
 export function validateJournal(raw, id) {
@@ -95,11 +105,14 @@ export function journalStatistics(journal, { now = Date.now() } = {}) {
 // Journal and brief UI operations are serialized per provider. Generation and
 // task occupancy are isolated by session; result waits release the lock.
 export class TaskKernel {
-  constructor(providers, { directory = process.env.WEB_CHAT_DATA_DIR || path.join(os.homedir(), '.web-chat-mcp'), verifyStoragePaths = verifyDataPaths } = {}) {
+  constructor(providers, { directory = process.env.WEB_CHAT_DATA_DIR || path.join(os.homedir(), '.web-chat-mcp'), verifyStoragePaths = verifyDataPaths, progressStallMs = 120000, controlBusyRetryMs = 5000 } = {}) {
     this.providers = new Map(providers.map((provider) => [provider.id, provider]));
     this.directory = path.resolve(directory);
     this.sessions = new Map();
     this.verifyStoragePaths = verifyStoragePaths;
+    if (!Number.isFinite(progressStallMs) || progressStallMs < 1 || !Number.isFinite(controlBusyRetryMs) || controlBusyRetryMs < 1) throw new TypeError('Progress and CONTROL_BUSY retry intervals must be positive finite numbers.');
+    this.progressStallMs = progressStallMs;
+    this.controlBusyRetryMs = controlBusyRetryMs;
   }
   adapter(id, sessionId) {
     const provider = this.provider(id);
@@ -373,16 +386,19 @@ export class TaskKernel {
             else throw new WebUIError('RETRY_UNCONFIRMED', 'Only the previous answer is visible; retry completion is not confirmed. Do not click again.');
           }
           const newResponse = strictIdentity(adapter) ? typeof observed.responseId === 'string' && !!observed.responseId.trim() && observed.responseId !== task.baseline.responseId : observed.responseCount > task.baseline.responseCount;
+          updateTaskProgress(task, { ...observed, text: newResponse ? observed.text : '' }, Date.now(), this.progressStallMs, textHash);
           if (observed.complete && newResponse) {
             await adapter.settle(identity);
             task.state = 'completed'; task.blocking = false; releaseTask(state, task);
             task.response = { text: observed.text, format: 'plain_text', complete: true, model: observed.model || null, url: observed.url };
+            task.progress = { ...task.progress, phase: 'completed' };
           } else if (cancel) {
             if (!observed.busy) throw new WebUIError('CANCEL_UNCONFIRMED', 'No active generation control could be confirmed. Task remains reserved.');
             await adapter.cancel(identity);
             await adapter.settle(identity, { allowIdle: true });
             task.state = 'cancelled'; task.blocking = false; releaseTask(state, task);
             task.response = { text: observed.text || '', format: 'plain_text', complete: false, model: observed.model || null, url: observed.url };
+            task.progress = { ...task.progress, phase: 'cancelled' };
           } else { task.state = observed.busy ? 'running' : 'submitted'; task.blocking = true; }
           task.error = null;
         }, { signal, name: cancel ? 'chat_cancel' : 'chat_result' });
@@ -391,12 +407,12 @@ export class TaskKernel {
         task.state = 'uncertain';
         const interruptedAfterBoundary = budgetReason && signal?.reason === budgetReason && error === budgetReason;
         const retainPriorError = error.code === 'CONTROL_BUSY' && previousState === 'uncertain' && previousError && !['CONTROL_BUSY', 'RESULT_TIMEOUT'].includes(previousError.code);
-        task.error = retainPriorError ? previousError : { code: interruptedAfterBoundary ? (cancel ? 'CANCEL_UNCONFIRMED' : 'RESULT_OBSERVATION_INTERRUPTED') : error.code || (signal?.aborted ? 'INTERRUPTED' : 'PROVIDER_ERROR'), message: error.message.split('\n')[0], ...(error.safeDiagnostics ? { diagnostics: safeControlDiagnostics(error.safeDiagnostics) } : {}) };
+        task.error = retainPriorError ? previousError : { code: interruptedAfterBoundary ? (cancel ? 'CANCEL_UNCONFIRMED' : 'RESULT_OBSERVATION_INTERRUPTED') : error.code || (signal?.aborted ? 'INTERRUPTED' : 'PROVIDER_ERROR'), message: error.message.split('\n')[0], ...(observationOnly && error.code === 'CONTROL_BUSY' ? { retryable_observation: true } : {}), ...(error.safeDiagnostics ? { diagnostics: safeControlDiagnostics(error.safeDiagnostics) } : {}) };
       }
       task.updated_at = Date.now(); await save(); return taskView(task);
     }, signal, deadline);
   }
-  async result(taskId, { wait = false, timeoutMs = 30000, signal, refresh = false, conversation_url } = {}) {
+  async result(taskId, { wait = false, timeoutMs = 30000, signal, refresh = false, conversation_url, onProgress } = {}) {
     if (!Number.isFinite(timeoutMs) || timeoutMs < 1000 || timeoutMs > 300000) throw new WebUIError('INVALID_TIMEOUT', 'timeoutMs must be between 1000 and 300000.');
     const deadline = Date.now() + timeoutMs;
     const budget = new AbortController();
@@ -404,15 +420,34 @@ export class TaskKernel {
     const timer = setTimeout(() => budget.abort(budgetReason), timeoutMs);
     const observationSignal = signal ? AbortSignal.any([signal, budget.signal]) : budget.signal;
     let latest;
+    let pollStep = 0;
+    let previousProgressKey = null;
     try {
       while (true) {
         observationSignal.throwIfAborted();
         latest = await this.read(taskId, { signal: observationSignal, refresh, conversation_url, deadline, budgetReason });
         refresh = false;
-        if (!wait || terminal.has(latest.state) || latest.state === 'uncertain' || Date.now() >= deadline) return { ...latest, timed_out: !terminal.has(latest.state) && Date.now() >= deadline };
-        // Release provider locks between observations; cancellation/status
-        // remain available. No worker resends or races a whole send workflow.
-        await delay(Math.min(1000, Math.max(1, deadline - Date.now())), undefined, { signal: observationSignal });
+        if (typeof onProgress === 'function') {
+          try {
+            const pending = onProgress(latest.progress, latest);
+            if (pending && typeof pending.then === 'function') Promise.resolve(pending).catch(() => {});
+          } catch {}
+        }
+        const retryControlBusy = latest.state === 'uncertain' && latest.error?.code === 'CONTROL_BUSY' && latest.error?.retryable_observation === true;
+        if (!wait || terminal.has(latest.state) || (latest.state === 'uncertain' && !retryControlBusy) || Date.now() >= deadline) return { ...latest, timed_out: !terminal.has(latest.state) && Date.now() >= deadline };
+        // Retry only a controller-cleanup error proven to occur before settle/cancel.
+        if (retryControlBusy) {
+          await delay(Math.min(this.controlBusyRetryMs, Math.max(1, deadline - Date.now())), undefined, { signal: observationSignal });
+          continue;
+        }
+        const progressKey = latest.progress
+          ? String(latest.progress.phase) + ':' + String(latest.progress.response_chars) + ':' + String(latest.progress.last_progress_at)
+          : latest.state;
+        const hadProgress = progressKey !== previousProgressKey;
+        previousProgressKey = progressKey;
+        const next = nextPollDelayMs(pollStep, hadProgress, deadline - Date.now());
+        pollStep = next.nextStep;
+        await delay(next.delayMs, undefined, { signal: observationSignal });
       }
     } catch (error) {
       signal?.throwIfAborted();
