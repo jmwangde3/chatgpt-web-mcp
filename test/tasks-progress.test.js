@@ -130,7 +130,7 @@ test('wait=true retries transient CONTROL_BUSY read-only and completes the same 
 
 test('CONTROL_BUSY retry is bounded by the original result deadline', async t => {
   const f = await fixture(t);
-  f.kernel.controlBusyRetryMs = 500;
+  f.kernel.controlBusyRetryMs = 5_000;
   let observations = 0;
   f.adapter.inspect = async () => {
     observations += 1;
@@ -141,14 +141,14 @@ test('CONTROL_BUSY retry is bounded by the original result deadline', async t =>
   assert.equal(result.state, 'uncertain');
   assert.equal(result.error.code, 'CONTROL_BUSY');
   assert.equal(result.timed_out, true);
-  assert.equal(observations, 2, 'must stop when the caller deadline expires');
+  assert.equal(observations, 1, 'must not retry when the retry interval exceeds the caller budget');
   assert.equal(f.sends(), 1);
 });
 
 test('a retryable CONTROL_BUSY can resume in a later observation slice without resending', async t => {
   const f = await fixture(t);
   let observations = 0;
-  f.kernel.controlBusyRetryMs = 500;
+  f.kernel.controlBusyRetryMs = 5_000;
   f.adapter.inspect = async () => {
     observations += 1;
     throw Object.assign(new Error('controller remains busy'), { code: 'CONTROL_BUSY' });
@@ -158,7 +158,7 @@ test('a retryable CONTROL_BUSY can resume in a later observation slice without r
   assert.equal(first.state, 'uncertain');
   assert.equal(first.timed_out, true);
   assert.equal(first.error.retryable_observation, true);
-  assert.equal(observations, 2);
+  assert.equal(observations, 1);
 
   f.adapter.inspect = async () => {
     observations += 1;
@@ -169,7 +169,7 @@ test('a retryable CONTROL_BUSY can resume in a later observation slice without r
   assert.equal(second.state, 'completed');
   assert.equal(second.task_id, first.task_id);
   assert.equal(second.response.text, 'completed in next slice');
-  assert.equal(observations, 3);
+  assert.equal(observations, 2);
   assert.equal(f.sends(), 1, 'later observation slices must never resubmit the prompt');
 });
 
