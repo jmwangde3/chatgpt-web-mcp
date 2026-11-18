@@ -62,6 +62,8 @@ MCP 只提供以下四个工具；不得寻找或调用旧的 `chatgpt_*`、`gem
 
 `chat_send` 默认使用 ChatGPT；只有用户明确指定 Gemini 时才传 `provider: "gemini"`。ChatGPT 在未指定模型、思考强度和回答档位时默认 GPT-6 + 高。模型/档位的显式参数优先。
 
+用户明确授权把同一内容发给两个平台做对比时，可传 `providers: ["chatgpt", "gemini"]`，不再传 `provider` 或单平台模型、思考强度等设置。两个平台都会收到提示词及明确列出的附件。用返回的 `fanout:` 父 `task_id` 调用 `chat_result` 读取各子项；查询不会发送，部分失败也不自动重发整组。
+
 **项目会话：**同一项目使用稳定 `session_id`，例如 `project_chatgpt_web_mcp`；不同项目或确实需要并行的独立任务使用不同值。不要依赖 `chat_new`（该工具不存在）；新的独立会话通过新的 `session_id` 建立。每个新逻辑请求生成新的 `request_id`。只有恢复同一个请求时才复用原 `request_id`，并且必须保持 provider、session、prompt、files、model、thinking_level、answer_tier、web_search 和 existing_draft 完全一致。
 
 **提交一次：**调用 `chat_send` 后保存返回的 `task_id`、`session_id`、`request_id`。提交响应丢失时，只有通过相同 `request_id` 和完全相同 payload 才能安全恢复原记录；不得用新 ID 猜测性重发。

@@ -207,6 +207,24 @@ export class GeminiBrowser {
     return { composer, snapshot: s };
   }
 
+  async prepareSendPage({ existingDraft = false } = {}) {
+    const { snapshot: before } = await this.editable({ empty: !existingDraft });
+    const page = await this.page();
+    const guarded = () => page.evaluate(() => typeof window.__webChatSendGate?.handler === 'function');
+    if (await guarded()) return;
+    if (existingDraft || await page.evaluate(() =>
+      Boolean(document.querySelector('[data-state="uploading"], [data-testid*="upload-progress"]')) ||
+      [...document.querySelectorAll('[role="progressbar"], [aria-busy="true"]')].some(node => node.getClientRects().length > 0))) {
+      throw new WebUIError('SEND_NOT_ATTEMPTED', 'Early send guard is unavailable; preserve the existing draft or upload and refresh manually.');
+    }
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: this.config.actionTimeout });
+    const { snapshot: after } = await this.editable({ empty: true });
+    if (after.url !== before.url || after.userCount !== before.userCount ||
+        after.responseCount !== before.responseCount || after.lastUser !== before.lastUser || !await guarded()) {
+      throw new WebUIError('SEND_NOT_ATTEMPTED', 'Gemini did not return to the same guarded conversation after one refresh.');
+    }
+  }
+
   async newChat() {
     await this.editable({ empty: true }); await this.throttle("change");
     await this.editable({ empty: true });

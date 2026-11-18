@@ -24,7 +24,8 @@ try {
   assert.deepEqual(names, expected, 'MCP must expose exactly the four Web-First tools in stable order');
 
   const send = tools.find(tool => tool.name === 'chat_send');
-  assert.equal(send.inputSchema.properties.provider.default, 'chatgpt');
+  assert.ok(send.inputSchema.properties.providers);
+  assert.ok(!(send.inputSchema.required || []).includes('providers'));
   const result = tools.find(tool => tool.name === 'chat_result');
   assert.equal(result.inputSchema.properties.wait.default, true);
   assert.equal(result.inputSchema.properties.timeoutMs.default, 90_000);

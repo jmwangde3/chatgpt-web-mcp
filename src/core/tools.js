@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { Fanout } from './fanout.js';
 import { diagnose } from './diagnostics.js';
 import { safeControlDiagnostics } from '../shared/browser-diagnostics.js';
 
@@ -40,6 +41,7 @@ function createProgressNotifier(extra) {
 }
 
 export function registerWebFirstTools(server, kernel) {
+  const fanout = new Fanout(kernel);
   const providerNames = [...kernel.providers.keys()];
   if (!providerNames.includes('chatgpt')) throw new Error('The ChatGPT provider is required for the default chat_send route.');
   const provider = z.enum(providerNames).default('chatgpt');
@@ -76,7 +78,9 @@ export function registerWebFirstTools(server, kernel) {
     'chat_send',
     'Primary Web-First reasoning entry. Use for substantive analysis, research, architecture, design, technical choices, root-cause analysis, debugging strategy and implementation planning before local agents make design decisions. Returns a durable task_id after one submission. Reuse a stable session_id per project and a new request_id per new logical request. After uncertainty, replay only the exact same request_id and payload; never create a replacement send. Provider defaults to ChatGPT; choose Gemini only when explicitly requested. ChatGPT defaults to GPT-6 + 高 when model, thinking_level and answer_tier are omitted.',
     {
-      provider,
+      provider: z.enum(providerNames).optional(),
+      providers: z.array(z.enum(providerNames)).length(2).optional()
+        .describe('Explicitly send the same prompt and files to both listed providers. Mutually exclusive with provider and single-provider settings.'),
       session_id,
       request_id: z.string().min(1).max(128),
       prompt: z.string().min(1),
@@ -87,7 +91,9 @@ export function registerWebFirstTools(server, kernel) {
       web_search: z.boolean().default(false),
       existing_draft: z.boolean().default(false),
     },
-    (input, signal) => kernel.send(input, { signal }),
+    (input, signal) => input.providers !== undefined
+      ? fanout.send(input, { signal })
+      : kernel.send({ ...input, provider: input.provider ?? 'chatgpt' }, { signal }),
   );
 
   tool(
@@ -100,7 +106,7 @@ export function registerWebFirstTools(server, kernel) {
       conversation_url: z.string().url().optional(),
       timeoutMs: z.number().int().min(1_000).max(300_000).default(90_000),
     },
-    (input, signal, extra) => kernel.result(input.task_id, {
+    (input, signal, extra) => input.task_id.startsWith('fanout:') ? fanout.result(input.task_id, { ...input, signal }) : kernel.result(input.task_id, {
       ...input,
       signal,
       onProgress: createProgressNotifier(extra),
