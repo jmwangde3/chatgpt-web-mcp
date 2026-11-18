@@ -6,7 +6,7 @@
 
 ## Current send defaults
 
-For ChatGPT, `chat_send` and `chatgpt_send_message` select and reverify GPT-6 + 高 before sending when model, thinking level and answer tier are all omitted. Explicit settings take precedence; an unspecified counterpart stays unchanged. Conflicting thinking level and answer tier fail before sending. Gemini is unaffected. The legacy extreme-tier route runs only when explicitly invoked. Reconnect existing MCP clients to load changes. This repository prefers web GPT-6 High for reasoning and Codex 6.1 Terra medium for execution as a collaboration convention; MCP does not switch the host model or delegate automatically.
+For ChatGPT, `chat_send` selects and verifies GPT-6 + 高 when model, thinking level and answer tier are omitted. Explicit settings take precedence; failed verification stops the send. Gemini is used only when explicitly requested. This repository uses Web-First collaboration: ChatGPT Web handles substantive reasoning and design first; local agents gather minimum evidence, execute the resulting specification and test it. The preferred settings are web GPT-6 High and Codex 6.1 Terra medium. MCP does not switch the host model or authorize uploading a whole workspace or secrets.
 
 ## Browser stability fixes (0.7.11)
 
@@ -21,81 +21,17 @@ With unfinished tasks, upgrade using `node src/cli.js upgrade --preserve-tasks`,
 
 ChatGPT now recognizes the current Send button and verifies the appended prompt before reporting success, without an Enter fallback. Gemini surfaces its additional service-error message as `PAGE_ERROR`. To repair an older installation that cannot read newer task journals, run `node src/cli.js upgrade --preserve-tasks` from a current checkout; the candidate must validate existing journals before activation. See [upgrade compatibility](docs/COMPARISONS_AND_INSTALL.md#upgrade-and-rollback).
 
-## MCP + web expert skill
+## MCP + Web-First skill
 
-This repository includes both the MCP server (`src/`) and the [web-chat expert skill](skills/web-chat/SKILL.md). The skill prepares the current agent task's questions, context and authorized files, consults ChatGPT or Gemini in the browser, waits for the full answer, and brings it back to continue the original task. The default expert is ChatGPT **GPT-6 + 高**; explicit provider/model requests take precedence.
+This repository includes the MCP server and the existing [web-chat Web-First skill](skills/web-chat/SKILL.md). For tasks requiring understanding, research, analysis, architecture, design, technical choices, root-cause analysis or implementation planning, ChatGPT Web is the default decision layer. Local agents gather minimum necessary facts, execute its file-by-file Implementation Spec and verify the result. Users do not need to name the skill on every substantive task.
 
-Historical note (0.7.10): the web-chat expert skill then defaulted to Gemini 4 Argon + High. That release expanded Gemini's nested Thinking level menu before selecting and verifying High, while retaining flat-menu and legacy Extended thinking support. The current consultation default is ChatGPT GPT-6 + 高. Gemini remains supported and must follow the user's explicit provider and model choice. Current ChatGPT send defaults are described above. Reconnect MCP after upgrading; update an installed skill separately when desired.
+The skill enables implicit invocation through `agents/openai.yaml`. Deterministic local commands/tests and explicit local-only requests remain local. Do not install a second Architect skill.
 
-See the [Codex installation and usage guide](docs/CODEX_SKILL.md) to register the `web-chat` MCP and install the skill. If the MCP is already configured, install only the skill. Example: `Use $web-chat to ask Gemini to review this plan, then use its complete response to improve the plan.`
+## Four-tool MCP interface
 
-## Parallel sessions (0.7.0)
+The MCP server intentionally exposes exactly four tools: `chat_send`, `chat_result`, `chat_history` and `chat_doctor`. The default provider is ChatGPT GPT-6 + 高; choose Gemini only when explicitly requested. Reuse a stable `session_id` per project, create a new `request_id` for each new logical request, and recover only with the original `task_id`.
 
-Pass distinct `session_id` values to `chat_send` for independent tabs and
-concurrent answers on the same ChatGPT or Gemini account. Task recovery and
-cancellation stay scoped to the originating session; account throttling and
-rate limits remain shared. ChatGPT also accepts verified `answer_tier: "Pro"`
-and `web_search: true`. Restart all MCP connections after upgrading; see
-[parallel-session usage and compatibility](docs/PARALLEL_SESSIONS.md).
-
-A unified MCP server for the ChatGPT and Gemini web interfaces, with multi-model comparisons, durable tasks, restart recovery, and local status management. Each provider uses a separate browser sign-in environment; no API key is required.
-
-## Multi-model comparisons and managed installation (0.6.0)
-
-`chat_compare` asks the same question of 2–6 explicit provider/model targets and preserves separate, recoverable results. Providers operate independently; models sharing a provider run sequentially in fresh conversations. Setup, unified login, diagnostics, upgrade, rollback, a read-only local status panel and redacted reports are now available. There are 62 MCP tools with all legacy tools retained.
-
-Run `node src/cli.js setup` and use the generated stable MCP entry point for managed upgrades and rollback. Run `node src/cli.js panel` for local status. See [comparison workflows and installation](docs/COMPARISONS_AND_INSTALL.md) for exact commands and recovery behavior.
-
-## Local diagnostics and task management (0.5.0)
-
-`chat_doctor` adds redacted local diagnostics for both providers without opening a browser. Task listings support state filters and pagination; task views include actionable recovery guidance. The CLI now supports `providers`, `doctor`, `tasks`, `result`, `cancel` and confirmed `abandon`, sharing the MCP task core. There are 60 MCP tools. See [management commands, privacy and exit codes](docs/MANAGEMENT.md).
-
-## Unified interfaces and durable tasks (0.4.0)
-
-Thirteen new `chat_*` tools share a provider-neutral coordinator while preserving all 46 legacy tools. `chat_send` accepts `provider` and a stable `request_id`; `chat_result` resumes by `task_id` after an MCP restart. Replays do not resend. Managed tasks prevent legacy tools from changing the same provider page until resolved. Task listing, verified cancellation and explicit recovery are included.
-
-The new `web-chat-mcp` executable aliases the existing command. Restart the MCP connection after updating. Private journals, including completed responses, default to `~/.web-chat-mcp` (`WEB_CHAT_DATA_DIR` overrides it). See [architecture, usage and recovery](docs/UNIFIED_TASKS.md) for scope and limitations.
-
-## Gemini support (0.3.0)
-
-The existing MCP entry point now exposes both `chatgpt_*` and `gemini_*` tools. Existing ChatGPT names and configuration remain compatible. Gemini has a separate persistent browser profile, operation lock, rate-limit state, pending-send journal and archive directory.
-
-```bash
-npm ci
-node src/cli.js doctor --provider gemini
-node src/cli.js login --provider gemini
-```
-
-Sign in to Google/Gemini manually in the dedicated window. The server never reads your everyday browser profile or accepts passwords/cookies. Restart the MCP client connection after updating to discover the new tools; the entry point remains `src/index.js`.
-
-Use `gemini_status`, `gemini_new_chat`, then `gemini_send_message`. A `pending: true` or `timedOut: true` result is **not completion**: resume with `gemini_get_latest_response` and `wait: true`, without resending. Send intent is persisted before clicking, so uncertain delivery survives process exits. Only user-confirmed manual inspection can resolve an uncertain send with `gemini_resolve_pending`.
-
-For authorized attachments, use `gemini_write_prompt`, `gemini_upload_files` (absolute paths), and `gemini_submit_prompt`. Atomic `gemini_send_message` requires an empty composer. Drafts, attachments, and pending responses prevent accidental navigation or overwrites.
-
-Additional tools: `gemini_list_models`, `gemini_select_model`, `gemini_list_history`, `gemini_select_history`, `gemini_archive_conversation`, `gemini_browser_lifecycle`, `gemini_circuit_breaker_status`, `gemini_clear_circuit_breaker`, and `gemini_close_browser`. Close the dedicated browser only when explicitly requested.
-
-Model names come from the actual page. History and Markdown archives contain only currently loaded messages; they do not claim complete history. There is no private Gemini API, guessed model identity, Pro probing, or automatic 40-turn rotation. UI/account/language changes can make controls unavailable; the adapter stops with an error.
-
-Sends and conversation/model changes are spaced by at least five seconds. Gemini HTTP 429 or rate-limit UI stops further actions, without retries or account switching. Clearing a breaker requires manual confirmation and enforces a further five-minute recovery period.
-
-| Environment variable | Default |
-| --- | --- |
-| `GEMINI_WEB_DATA_DIR` | `~/.gemini-web-mcp` |
-| `GEMINI_WEB_PROFILE` | `chrome-profile` under the data directory |
-| `GEMINI_WEB_CHROME` | Auto-detected Chrome/Edge; falls back to `CHATGPT_WEB_CHROME` |
-| `GEMINI_WEB_ARCHIVE_DIR` | `conversation-context` under the data directory |
-| `GEMINI_WEB_HEADLESS` | `false` (manual login needs a visible window) |
-| `GEMINI_WEB_ACTION_TIMEOUT_MS` | `20000` |
-| `GEMINI_WEB_RESPONSE_TIMEOUT_MS` | `300000` |
-| `GEMINI_WEB_SEND_INTERVAL_MS` | `5000` minimum |
-| `GEMINI_WEB_CHANGE_INTERVAL_MS` | `5000` minimum |
-| `GEMINI_WEB_RECOVERY_INTERVAL_MS` | `300000` minimum |
-
-Validation: `npm test`, `npm run smoke`, `npm run test:browser`, and `npm pack --dry-run`. Browser integration tests intercept all requests with local fixtures and require no account or real sends. Install Chrome/Edge or run `npx playwright-core install chromium`. Live Gemini acceptance is separate and requires manual sign-in and low-frequency checks.
-
-After signing in, explicitly run `node scripts/verify-gemini.js --send` to create a test conversation and send two synthetic prompts through MCP, checking completion, reconnect and follow-up context. Without `--send`, it only checks status. This script is excluded from CI.
-
-Add `--upload` to test attachments: `node scripts/verify-gemini.js --send --upload`. It generates a temporary text file containing only a synthetic marker, uploads it, and verifies Gemini reads the marker. It never uploads your documents. See the [validation report](docs/GEMINI_VALIDATION.md) for the actual live acceptance results.
+Task listing, cancellation, abandonment, login and installation maintenance use the CLI. There is no `full/unified` toolset switch and no legacy provider-specific MCP compatibility mode. See [Web-First task and recovery details](docs/WEB_FIRST_TASKS.md).
 
 ## Existing ChatGPT features
 
@@ -108,9 +44,9 @@ An unofficial local MCP server that lets Codex and other MCP clients operate `ch
 
 ## Features
 
-- Create normal and temporary chats and select chat history
-- Write prompts, upload explicitly selected files, send messages, and read responses
-- Discover models, reasoning levels, and answer tiers from the visible UI
+- Use stable named sessions and read provider/session history
+- Submit prompts, attach explicitly selected files, and read complete responses
+- Default ChatGPT sends to GPT-6 + 高; explicit model settings take precedence
 - Keep the dedicated browser and ChatGPT page open between MCP calls
 - Serialize browser control across MCP processes and apply conservative delays
 - Gate new actions on rate-limit text or conversation-generation POST HTTP 429; background/history 429 is diagnostic-only, with no endpoint retry; completed answers remain readable
@@ -162,67 +98,59 @@ See the [official OpenAI MCP documentation](https://learn.chatgpt.com/docs/exten
 
 ### MCP JSON configuration (Windows)
 
-For clients that use a `mcpServers` JSON configuration, copy this example and replace both absolute paths. If `mcpServers` already exists, add the `chatgpt-web` entry to it. Reconnect the MCP server after saving. For Codex, use the `codex mcp add` command above.
+No toolset environment variable is required. The server always exposes exactly four MCP tools. Reconnect the MCP client after saving:
 
 ```json
 {
   "mcpServers": {
-    "chatgpt-web": {
+    "web-chat": {
       "command": "C:\\path\\to\\node.exe",
-      "args": [
-        "C:\\path\\to\\chatgpt-web-mcp\\src\\index.js"
-      ],
-      "env": {
-        "CHATGPT_WEB_MCP_TOOLSET": "unified"
-      }
+      "args": ["C:\\path\\to\\chatgpt-web-mcp\\src\\index.js"]
     }
   }
 }
 ```
 
-The example enables the unified `chat_*` tools. Set `CHATGPT_WEB_MCP_TOOLSET` to `full` if you need the legacy `chatgpt_*` or `gemini_*` tools.
+## Four MCP tools
 
-## CLI
+| Tool | Purpose |
+| --- | --- |
+| `chat_send` | Submit a task to ChatGPT by default; select Gemini only when explicitly requested |
+| `chat_result` | Wait for, read and resume the original task; 90-second observation slice by default |
+| `chat_history` | Read provider/session history |
+| `chat_doctor` | Local runtime diagnostics; does not verify website sign-in |
 
-```text
-chatgpt-web-mcp serve    Start the stdio MCP server (default)
-chatgpt-web-mcp login    Open the dedicated browser for manual login
-chatgpt-web-mcp status   Inspect local browser state
-chatgpt-web-mcp doctor   Check Node.js, browser detection, and local paths
-chatgpt-web-mcp help     Show command help
+`chat_send` defaults to ChatGPT GPT-6 + 高. Reuse one stable `session_id` per project and a new `request_id` for each new logical request. Recovery always uses the original `task_id`. `chat_result` defaults to `wait=true` and `timeoutMs=90000`. Agents automatically observe a logical task for at most 20 minutes; reaching that budget only stops waiting—it does not cancel, release or resend the task.
+
+Task listing, cancellation, abandonment, login, diagnostics and installation maintenance use the CLI. Model discovery/selection, explicit archive and multi-model comparison are not exposed through MCP:
+
+```powershell
+node src/cli.js doctor
+node src/cli.js tasks --provider all --state uncertain
+node src/cli.js result <task_id> --wait --timeout 90000
+node src/cli.js cancel <task_id>
+node src/cli.js abandon <task_id> --confirm
 ```
 
-## Configurable routing policy
+## Default routing policy
 
-The explicitly invoked legacy `chatgpt_route_new_chat(requestPro=false)` creates a non-temporary chat with the available `极高` tier; it is not automatically called for ordinary sends.
+For ordinary ChatGPT `chat_send`, GPT-6 + 高 is selected and verified when model, thinking level and answer tier are all omitted. Explicit settings take precedence; a failed verification stops the send. Gemini is used only when explicitly requested. Temporary Pro identity probes remain disabled by default. A model's self-description or network label is not independent proof of the serving model.
 
-**Temporary Pro identity probes are disabled by default** (`CHATGPT_WEB_PROBE_ENABLED=false`). Both `chatgpt_probe_pro_identity` and `requestPro=true` fail before opening a temporary chat or sending a probe; `forceProbe=true` does not bypass the switch. This avoids extra conversations and test requests. Explicitly selecting a Pro option that the UI actually offers is still possible, but actual model routing is not guaranteed.
+## Other environment variables
 
-Set `CHATGPT_WEB_PROBE_ENABLED=true` and restart the MCP server only if an experimental identity probe is needed. The existing experimental route probes the available tier and reads `model_slug`: mini falls back to the default tier, another nonempty slug is classified as `network-verified`, and a missing slug stops the route. **Non-mini does not mean Pro.** The probe does not force a Pro selection; its tool name and `requestPro` parameter remain for compatibility.
-
-When enabled, a reliable probe result is reused while the same browser and page stay open, with a three-hour grace period after a detected close. Normal MCP calls only disconnect local control, so they do not start that timer. With probing disabled, cache expiry never triggers a probe or requires a new login.
-
-These values can be changed without editing source code:
-
-| Variable | Default |
-| --- | --- |
-| `CHATGPT_WEB_PROBE_ENABLED` | `false` |
-| `CHATGPT_WEB_DEFAULT_TIER` | `极高` |
-| `CHATGPT_WEB_PRO_TIER` | `Pro` |
-| `CHATGPT_WEB_PROBE_PROMPT` | `你是什么模型？` |
-| `CHATGPT_WEB_PROBE_ACCEPT_ID` | `gpt-5.6-pro` |
-| `CHATGPT_WEB_PROBE_FALLBACK_ID` | `gpt-5.5-mini` |
-| `CHATGPT_WEB_PROBE_ACCEPT_PATTERN` | GPT-5.6 Pro regular expression |
-| `CHATGPT_WEB_PROBE_FALLBACK_PATTERN` | GPT-5.5 mini regular expression |
-| `CHATGPT_WEB_PRO_RECHECK_AFTER_CLOSE_MS` | `10800000` (3 hours) |
-| `CHATGPT_WEB_MAX_CONVERSATION_TURNS` | `40` |
-| `CHATGPT_WEB_CONTEXT_ARCHIVE_DIR` | `~/.chatgpt-web-mcp/conversation-context` |
-
-`CHATGPT_WEB_MCP_TOOLSET` defaults to `full`, preserving compatibility with all existing tools: 17 `chat_*`, 29 `chatgpt_*`, and 17 `gemini_*` tools. Explicitly set it to `unified` in this MCP connection's environment and restart the connection to register only the existing 17 `chat_*` tools. Provider-specific tools are not registered in that mode. Legacy upload, diagnostic, and other provider-specific functions without a unified replacement are unavailable through those legacy tools in `unified`; this mode does not imply complete feature parity.
-
-Both modes retain the same `request_id` deduplication, `task_id` recovery, and `session_id` binding rules. `tools/list` does not launch a browser. Upgrading does not enable `unified` for you or change global user configuration. [.env.example](.env.example) shows only the default `full` value.
-
-See [.env.example](.env.example). The project does not automatically load `.env`; inject variables through the MCP client, shell, or operating system.
+- `CHATGPT_WEB_CHROME`: absolute browser executable path
+- `CHATGPT_WEB_PROFILE`: dedicated browser profile directory
+- `CHATGPT_WEB_HEADLESS`: headless mode, default `false`
+- `CHATGPT_WEB_ACTION_TIMEOUT_MS`: single page-action timeout
+- `CHATGPT_WEB_RESPONSE_TIMEOUT_MS`: browser generation timeout; separate from the Agent's 20-minute automatic observation budget
+- `CHATGPT_WEB_RECONNECT_DELAY_MS`: browser reconnect interval
+- `CHATGPT_WEB_AUTH_CACHE_MS`: local sign-in cache duration
+- `CHATGPT_WEB_PRO_RECHECK_AFTER_CLOSE_MS`: probe recheck delay after a detected close, default three hours
+- `CHATGPT_WEB_BROWSER_STATE`, `CHATGPT_WEB_RUNTIME_STATE`: local state files
+- `CHATGPT_WEB_OPERATION_LOCK`: cross-process browser operation lock
+- `CHATGPT_WEB_NETWORK_LOG`: sanitized network diagnostics log
+- `CHATGPT_WEB_MAX_CONVERSATION_TURNS`: conversation rotation threshold, default `40`
+- `CHATGPT_WEB_CONTEXT_ARCHIVE_DIR`: Markdown archive directory for conversation rotation
 
 ## Optional refresh before a new chat
 
@@ -255,7 +183,7 @@ The PR's stale-owner cleanup is preserved: when the recorded MCP process has exi
 - Response waiting uses in-page mutation events rather than page polling.
 - Failed in-page navigation stops instead of repeatedly reloading ChatGPT.
 - The ChatGPT web UI is not a stable API and selectors may require maintenance.
-- Before automatic conversation rotation, the complete transcript (including older lazy-loaded messages) is written as a `0600` Markdown archive; use `chatgpt_archive_conversation` for explicit persistence.
+- Before automatic conversation rotation, the complete transcript (including older lazy-loaded messages) is written as a `0600` Markdown archive.
 - Neither a model's self-description nor its network label independently proves the serving model; a non-mini label is not a Pro guarantee.
 
 ## Development

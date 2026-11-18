@@ -23,9 +23,6 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run smoke
-      - run: npm run smoke
-        env:
-          CHATGPT_WEB_MCP_TOOLSET: unified
       - run: npm pack --dry-run
       - run: npm run verify:package
 

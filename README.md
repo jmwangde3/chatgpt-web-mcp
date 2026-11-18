@@ -6,9 +6,9 @@
 
 ## 当前发送默认值
 
-ChatGPT 的 `chat_send` 和 `chatgpt_send_message` 在未指定模型、思考强度及回答档位时，发送前选择并重新核验 **GPT-6 + 高**；不可用或无法核验时停止发送。显式设置优先：只指定模型或强度时，另一项保留页面当前值；指定回答档位时不套用默认值。同值的强度和回答档位只设置一次，冲突则停止。Gemini 不受此底层默认值影响。旧 `chatgpt_route_new_chat` 仅在显式调用时保留其极高路由，不作为普通发送的自动步骤。已有 MCP 连接须重连以加载更新。
+ChatGPT 的 `chat_send` 在未指定模型、思考强度及回答档位时，发送前选择并重新核验 **GPT-6 + 高**；显式设置优先，无法核验时停止发送。Gemini 仅在用户明确指定时使用。已有 MCP 连接须重连以加载更新。
 
-本仓库协作偏好为网页 GPT-6 高负责思考、Codex 6.1 Terra medium 负责执行；这是工作约定，MCP 不切换宿主模型，也不自动委派或外发任务。
+本仓库采用 Web-First：需要分析、研究、设计、技术判断或根因定位的任务默认先交给 ChatGPT Web；本地 Codex/Agents 只收集最少必要事实，再按网页专家给出的逐文件实施规格执行和测试。纯确定性操作及用户明确要求本地执行时可绕过。默认偏好为网页 GPT-6 高、Codex 6.1 Terra medium；MCP 不切换宿主模型，也不授权上传整个工作区或秘密。
 
 ## 浏览器稳定性修复（0.7.11）
 
@@ -36,13 +36,13 @@ ChatGPT 的 `chat_send` 和 `chatgpt_send_message` 在未指定模型、思考�
 - Gemini 识别新增的服务错误提示，及时返回 `PAGE_ERROR`，不把错误当作持续生成。
 - 旧服务遇到新版任务记录时，可从当前源码运行 `node src/cli.js upgrade --preserve-tasks`。新版先验证现有记录的兼容性，保留任务和防重复发送记录。详见 [升级说明](docs/COMPARISONS_AND_INSTALL.md#upgrade-and-rollback)。
 
-## MCP + 网页专家 Skill
+## MCP + Web-First Skill
 
-本仓库同时维护 MCP 服务（`src/`）和 [web-chat 网页专家 Skill](skills/web-chat/SKILL.md)。Skill 负责整理当前 Agent 任务的问题、背景和已授权文件，调用 ChatGPT 或 Gemini 网页端，等待完整回复，再将专家意见用于后续工作。默认咨询 ChatGPT GPT-6 + 高，可明确指定其他平台或模型。
+本仓库同时维护 MCP 服务（`src/`）和 [web-chat Web-First Skill](skills/web-chat/SKILL.md)。涉及理解、分析、研究、设计、技术选型、根因定位和实施规划时，默认先由 ChatGPT Web 负责思考与决策；本地 Agent 收集最少必要事实，再按逐文件 Implementation Spec 修改、测试和反馈。无需用户每次点名调用。
 
-常规咨询由 MCP 自动启动或复用独立配置目录的专用浏览器，不接管日常 Chrome。独立任务通过 `session_id` 使用各自的标签页；工具缺失或连接失败时报告问题，不自动转用电脑操作或通用浏览器工具。
+MCP 固定只暴露四个工具：`chat_send`、`chat_result`、`chat_history`、`chat_doctor`。默认 Provider 为 ChatGPT GPT-6 + 高；Gemini 仅在用户明确要求时选择。每个项目复用稳定 `session_id`，每个新逻辑请求使用新 `request_id`，恢复始终使用原 `task_id`。
 
-按照 [Codex 安装与使用指南](docs/CODEX_SKILL.md) 配置名为 `web-chat` 的 MCP 并安装 Skill。已有 MCP 配置时只需复制 Skill，无需重新安装服务。示例：`使用 $web-chat，请 Gemini 审阅当前方案，取得完整意见后继续改进。`
+按照 [Codex 安装与使用指南](docs/CODEX_SKILL.md) 配置现有 `web-chat` MCP 并安装同名 Skill。不要安装第二份 Architect Skill。Skill 使用隐式调用策略；确定性本地操作和用户明确要求仅本地执行时不触发。
 
 ## 同平台任务并行（0.7.0）
 
@@ -50,94 +50,23 @@ ChatGPT 的 `chat_send` 和 `chatgpt_send_message` 在未指定模型、思考�
 
 `chat_send` 新增 `session_id`、`model`、`answer_tier` 和 `web_search`；ChatGPT 可直接选择并核验 `answer_tier: "Pro"`。使用方法、旧任务兼容及升级要求见 [并行会话文档](docs/PARALLEL_SESSIONS.md)。更新后请重启所有 MCP 连接。
 
-## 同题多模型与安装维护（0.6.0）
+## 安装与维护
 
-- `chat_compare`：同一问题发送给明确指定的 2–6 个平台/模型组合，分别返回答案。跨平台可并行，同一平台的多个模型依次在新对话中执行，支持重启恢复与防重复发送。
-- 统一命令：`setup`、`login`、`doctor`、`upgrade`、`rollback`、`panel`、`report`。独立安装目录中验证新版本后再切换，保留旧版本用于回滚，不覆盖现有源码工作区。
-- 本地只读状态面板：查看平台健康和任务状态，筛选任务并下载脱敏故障报告。
+通过 `node src/cli.js setup` 安装受管理版本；使用 `upgrade`、`rollback`、`panel` 和 `report` 管理本地运行。多模型比较 MCP 工具不再暴露；本项目个人使用接口以四个 Web-First 工具为准。详细命令见 [安装与维护文档](docs/COMPARISONS_AND_INSTALL.md)。
 
-安装运行 `node src/cli.js setup`；将输出的固定入口配置用于 MCP 客户端后，升级和回滚才会影响该连接。查看面板运行 `node src/cli.js panel`。目前共 62 个 MCP 工具，详见 [多模型、安装与维护文档](docs/COMPARISONS_AND_INSTALL.md)。
+## 本地诊断与任务管理
 
-## 本地诊断与任务管理（0.5.0）
+`chat_doctor` 检查本地运行环境，不打开浏览器，也不证明网页登录成功。任务列表、结果管理、取消和显式放弃跟踪通过 CLI：`node src/cli.js tasks`、`result`、`cancel`、`abandon`。
 
-新增 `chat_doctor`，统一检查两个平台的本地环境、锁和任务状态，报告不包含聊天内容、会话链接或本地路径。任务列表支持状态筛选和分页；任务结果附带具体恢复建议。共有 60 个 MCP 工具。
+## 持久化任务与恢复
 
-```bash
-node src/cli.js doctor
-node src/cli.js tasks --provider all --state uncertain
-node src/cli.js result <task_id> --wait --timeout 30000
-```
+`chat_send` 接收稳定的 `request_id` 并返回持久化 `task_id`；`chat_result` 在 MCP 重启后继续读取。同一请求重放不会重复发送。任务日志、会话身份核验、取消和恢复仍由同一任务核心管理。详见 [Web-First 任务与恢复](docs/WEB_FIRST_TASKS.md)。
 
-命令行还支持 `providers`、`cancel <task_id>` 和 `abandon <task_id> --confirm`，与 MCP 共用任务核心。诊断不会打开浏览器，也不代表登录或网页控件已验证。完整用法和退出码见 [管理与诊断文档](docs/MANAGEMENT.md)。
+## Gemini 网页端支持
 
-## 统一接口与持久化任务（0.4.0）
+Gemini 保留独立的专用浏览器、登录目录、操作锁、限流状态及任务日志。MCP 不再提供独立的 `gemini_*` 工具；用户明确要求 Gemini 时，通过 `chat_send({provider:"gemini", ...})` 使用同一持久化任务接口，后续通过 `chat_result` 恢复。登录和维护仍通过 `node src/cli.js login --provider gemini`、`doctor` 等 CLI 命令完成。
 
-新增 13 个通用 `chat_*` 工具，保留原有 46 个 `chatgpt_*` / `gemini_*` 工具。用 `provider: "chatgpt"` 或 `"gemini"` 选择平台：`chat_send` 接收稳定的 `request_id`，返回持久化 `task_id`；`chat_result` 可在 MCP 重启后恢复读取。同一请求编号不会重复发送，任务执行期间会阻止同平台旧接口切换页面。
-
-提供任务列表、经身份核对的取消操作和显式异常恢复。通用任务核心、平台适配器、ChatGPT 工具注册与策略已分层；两个平台继续保留各自的浏览器实现与登录目录。新增 `web-chat-mcp` 命令别名，原命令和配置继续可用。
-
-更新后重启 MCP 连接。任务结果默认保存在私有目录 `~/.web-chat-mcp`，可通过 `WEB_CHAT_DATA_DIR` 配置；不要删除记录来重试不确定的发送。完整用法、状态说明和限制见 [统一任务文档](docs/UNIFIED_TASKS.md)。
-
-## Gemini 网页端支持（0.3.0）
-
-同一个 MCP Server 现在同时提供 `chatgpt_*` 和 `gemini_*` 工具。原有 ChatGPT 工具名称与配置保持兼容；Gemini 使用独立的专用浏览器、登录目录、操作锁、限流状态及归档目录。
-
-```bash
-npm ci
-node src/cli.js doctor --provider gemini
-node src/cli.js login --provider gemini
-```
-
-在打开的专用窗口中手动登录 Google/Gemini。程序不读取日常 Chrome 的登录资料，不接受密码或 Cookie。已有 MCP 配置仍指向 `src/index.js`；更新代码后重启 MCP 客户端连接，即可发现 Gemini 工具。
-
-典型调用顺序：
-
-1. `gemini_status` 检查登录与当前对话。
-2. `gemini_new_chat` 新建对话（已有草稿、附件或未确认的发送会阻止切换）。
-3. `gemini_send_message` 发送并等待回答。
-4. 如果返回 `pending: true` 或 `timedOut: true`，调用 `gemini_get_latest_response` 并设置 `wait: true` 继续等待，**不要重新发送**。
-5. 继续调用 `gemini_send_message` 追问，或者显式调用 `gemini_archive_conversation` 将已加载消息保存为 Markdown。
-
-附件流程：`gemini_write_prompt` → `gemini_upload_files`（仅上传用户授权的绝对路径）→ `gemini_submit_prompt`。原子 `gemini_send_message` 要求空输入框，避免把用户原有草稿或附件一起发出。
-
-| Gemini 工具 | 用途 |
-| --- | --- |
-| `gemini_status` / `gemini_browser_lifecycle` | 页面状态 / 本地浏览器状态 |
-| `gemini_new_chat` | 新建对话 |
-| `gemini_write_prompt` / `gemini_upload_files` | 写入草稿 / 上传文件 |
-| `gemini_submit_prompt` / `gemini_send_message` | 提交已有草稿 / 原子发送新问题 |
-| `gemini_get_latest_response` | 读取回复或恢复等待 |
-| `gemini_list_models` / `gemini_select_model` | 列出并选择页面实际可用的模式 |
-| `gemini_list_history` / `gemini_select_history` | 列出已加载侧栏记录 / 打开对话 URL |
-| `gemini_archive_conversation` | 归档当前已加载消息，明确不保证完整历史 |
-| `gemini_circuit_breaker_status` / `gemini_clear_circuit_breaker` | 限流状态 / 人工确认后恢复 |
-| `gemini_resolve_pending` | 用户人工核对后解除不确定发送状态，不重发 |
-| `gemini_close_browser` | 仅在用户明确要求时关闭专用浏览器 |
-
-Gemini 不复用 ChatGPT 的模型名称、Pro 探针或 40 轮自动轮换策略。模型名直接取自页面菜单。网页布局、语言、账户与地区差异可能导致控件无法识别，此时工具返回错误并停止。Gemini 归档和历史列表只覆盖当前页面已加载的内容；不调用 Gemini 私有接口。
-
-发送与对话/模式切换间隔至少 5 秒。检测到 Gemini HTTP 429 或页面限流提示后停止，不自动重试、不自动切换账号。只有用户人工确认恢复后才可清除限流状态，并继续等待至少 5 分钟。发送意图在点击前落盘，即使进程退出或超时，也会保留待确认标记以防重复发送。
-
-环境变量（均可选）：
-
-| 变量 | 默认值 |
-| --- | --- |
-| `GEMINI_WEB_DATA_DIR` | `~/.gemini-web-mcp` |
-| `GEMINI_WEB_PROFILE` | 数据目录下的 `chrome-profile` |
-| `GEMINI_WEB_CHROME` | 自动检测 Chrome/Edge，可复用 `CHATGPT_WEB_CHROME` |
-| `GEMINI_WEB_ARCHIVE_DIR` | 数据目录下的 `conversation-context` |
-| `GEMINI_WEB_HEADLESS` | `false`，首次登录应使用可见窗口 |
-| `GEMINI_WEB_ACTION_TIMEOUT_MS` | `20000` |
-| `GEMINI_WEB_RESPONSE_TIMEOUT_MS` | `300000` |
-| `GEMINI_WEB_SEND_INTERVAL_MS` | `5000`，不可小于此值 |
-| `GEMINI_WEB_CHANGE_INTERVAL_MS` | `5000`，不可小于此值 |
-| `GEMINI_WEB_RECOVERY_INTERVAL_MS` | `300000`，不可小于此值 |
-
-验证：`npm test`、`npm run smoke`、`npm run test:browser`、`npm pack --dry-run`。浏览器测试使用本地模拟页面拦截所有网络请求，无需账号，不发送真实消息；真实网页验收需要另行手动登录并低频测试。浏览器测试需安装 Chrome/Edge，或执行 `npx playwright-core install chromium`。
-
-登录后可显式运行 `node scripts/verify-gemini.js --send`：通过 MCP 新建测试对话，发送两个不含私人信息的问题，验证回复完成、重连和上下文追问。不加 `--send` 时只检查状态；此脚本不进入 CI。
-
-增加 `--upload` 参数可验证附件：`node scripts/verify-gemini.js --send --upload`。脚本会创建一个仅含测试标记的临时文本文件，上传后让 Gemini 读出标记；不上传用户文档。实际网页验收结果见 [测试报告](docs/GEMINI_VALIDATION.md)。
+Gemini 不复用 ChatGPT 的模型名称或 Pro 探针。模型选择应使用用户提供或已确认的精确名称；无法核验时停止，不静默降级。历史结果受网页当前加载范围限制，不声称完整。
 
 ## 原有 ChatGPT 功能
 
@@ -149,13 +78,13 @@ Gemini 不复用 ChatGPT 的模型名称、Pro 探针或 40 轮自动轮换策�
 ## 主要能力
 
 - 写入提示词、上传文件、发送消息并读取完整回答
-- 新建普通或临时对话，选择历史对话
-- 动态读取和选择页面实际显示的模型、思考强度与能力档位
+- 通过稳定的 `session_id` 隔离独立对话，并读取会话历史
+- 普通 ChatGPT 发送默认选择并核验 GPT-6 + 高；需要其他模型时显式传入精确名称
 - 普通 ChatGPT 发送默认使用 GPT-6 + 高；临时 Pro 身份探针默认停用，避免额外创建临时对话和发送测试消息
 - 浏览器和 ChatGPT 页面默认常驻，工具结束后只断开本地控制连接
 - 跨进程串行操作、低频节流、回答完成后的切换静默期
 - 页面限流文字或对话生成 POST 接口 HTTP 429 阻止新操作；后台任务、模型列表和历史读取接口的 429 仅记诊断，不自动重试；已有完整回答仍可只读取回
-- 对话达到 40 轮或出现 ChatGPT maximum-length banner 时，发送前先滚动加载完整 transcript（含较早历史），再归档并轮换普通对话；直接 `chatgpt_submit_prompt` 会安全拦截
+- 对话达到 40 轮或出现 ChatGPT maximum-length banner 时，发送前先滚动加载完整 transcript（含较早历史），再归档并轮换普通对话
 - 只记录脱敏后的异常请求方法、路径、状态码和资源类型
 
 ## 运行要求
@@ -216,80 +145,43 @@ Codex 的 MCP 配置方式可参考 [OpenAI Docs](https://learn.chatgpt.com/docs
 
 ## MCP JSON 配置（Windows）
 
-对于使用 `mcpServers` JSON 配置的客户端，复制下面的配置并替换两处绝对路径。已有 `mcpServers` 时，把 `chatgpt-web` 合并到其中。保存后重新连接 MCP。Codex 使用上面的 `codex mcp add` 命令。
+MCP 不需要设置工具集环境变量。服务固定只注册四个工具，保存配置后重连 MCP：
 
 ```json
 {
   "mcpServers": {
-    "chatgpt-web": {
+    "web-chat": {
       "command": "C:\\path\\to\\node.exe",
-      "args": [
-        "C:\\path\\to\\chatgpt-web-mcp\\src\\index.js"
-      ],
-      "env": {
-        "CHATGPT_WEB_MCP_TOOLSET": "unified"
-      }
+      "args": ["C:\\path\\to\\chatgpt-web-mcp\\src\\index.js"]
     }
   }
 }
 ```
 
-示例启用统一的 `chat_*` 工具。若客户端需要旧版 `chatgpt_*` 或 `gemini_*` 工具，将 `CHATGPT_WEB_MCP_TOOLSET` 改为 `full`。
+## 四个 MCP 工具
 
-## CLI
+| 工具 | 用途 |
+| --- | --- |
+| `chat_send` | 默认向 ChatGPT 提交任务；明确要求 Gemini 时可指定 provider |
+| `chat_result` | 等待、读取和恢复原任务；默认单次观察 90 秒 |
+| `chat_history` | 读取指定 provider/session 的历史记录 |
+| `chat_doctor` | 本地运行环境诊断，不验证网页登录 |
 
-```text
-chatgpt-web-mcp serve    启动 stdio MCP Server（默认命令）
-chatgpt-web-mcp login    打开专用浏览器并等待手动登录
-chatgpt-web-mcp status   读取当前本地状态
-chatgpt-web-mcp doctor   检查 Node.js、浏览器和本地数据路径
-chatgpt-web-mcp help     显示帮助
+`chat_send` 默认 ChatGPT GPT-6 + 高。每个项目复用稳定 `session_id`，每个新逻辑请求使用新 `request_id`；恢复必须使用原 `task_id`。`chat_result` 默认 `wait=true`、`timeoutMs=90000`。Agent 对单个逻辑任务最多自动观察 20 分钟；到期只停止等待，不取消、不释放、不重发。继续时读取原任务。
+
+任务列表、取消、放弃跟踪、登录、诊断和安装维护通过 CLI。模型发现/选择、显式归档和多模型比较不再通过 MCP 暴露；`chat_send` 只接受用户提供或已确认的精确模型名称：
+
+```powershell
+node src/cli.js doctor
+node src/cli.js tasks --provider all --state uncertain
+node src/cli.js result <task_id> --wait --timeout 90000
+node src/cli.js cancel <task_id>
+node src/cli.js abandon <task_id> --confirm
 ```
-
-## MCP 工具
-
-工具按用途分为以下几组：
-
-- 状态：`chatgpt_status`、`chatgpt_capabilities`、`chatgpt_browser_lifecycle`
-- 对话：`chatgpt_new_chat`、`chatgpt_set_temporary`、`chatgpt_list_history`、`chatgpt_search_history`、`chatgpt_select_history`
-- 设置：`chatgpt_list_modes`、`chatgpt_select_mode`、`chatgpt_list_models`、`chatgpt_select_model`、`chatgpt_list_thinking_levels`、`chatgpt_select_thinking_level`、`chatgpt_answer_tier_status`、`chatgpt_select_answer_tier`
-- 输入与输出：`chatgpt_write_prompt`、`chatgpt_upload_files`、`chatgpt_submit_prompt`、`chatgpt_send_message`、`chatgpt_get_latest_response`、`chatgpt_archive_conversation`
-- 安全：`chatgpt_circuit_breaker_status`、`chatgpt_clear_circuit_breaker`、`chatgpt_network_diagnostics`
-- 策略路由：`chatgpt_probe_pro_identity`、`chatgpt_route_new_chat`
-
-只有用户明确要求关闭专用浏览器时，才应调用 `chatgpt_close_browser`。
 
 ## 默认路由策略
 
-旧的显式路由 `chatgpt_route_new_chat(requestPro=false)` 会新建非临时对话并选择页面可用的“极高”档位；它不会自动用于普通发送。
-
-**临时 Pro 身份探针默认停用**（`CHATGPT_WEB_PROBE_ENABLED=false`）。`chatgpt_probe_pro_identity` 或 `requestPro=true` 会明确报错，不新建临时对话，也不发送“你是什么模型？”；`forceProbe=true` 不能绕过停用设置。这样可以避免探针产生额外对话和请求。停用探针不等于禁止手动选择页面实际提供的 Pro 档位，但本工具不保证账号实际路由到哪一个模型。
-
-仅在确实需要实验性身份核对时，才手动设置 `CHATGPT_WEB_PROBE_ENABLED=true` 并重启 MCP。当前实验流程在临时对话的可用档位发送探针，读取网络响应的 `model_slug`：mini 回退默认档位，其他非空标记记为 `network-verified`，缺少标记则停止。**非 mini 不等于 Pro**，该流程不会强制选择 Pro。工具名及 `requestPro` 参数为兼容旧客户端而保留，不能把它们理解为 Pro 保证。
-
-启用探针时，同一浏览器与页面会话持续复用可靠缓存；检测到关闭后保留 3 小时，再次请求时才重验。普通 MCP 调用结束只断开控制连接，不关闭网页，不启动重验计时。默认停用状态下不会因缓存过期自动发起探针，也不会要求重新登录。
-
-相关配置：
-
-| 环境变量 | 默认值 | 用途 |
-| --- | --- | --- |
-| `CHATGPT_WEB_PROBE_ENABLED` | `false` | 是否显式启用实验性临时身份探针 |
-| `CHATGPT_WEB_DEFAULT_TIER` | `极高` | 普通请求和回退使用的倒数第二档名称 |
-| `CHATGPT_WEB_PRO_TIER` | `Pro` | 滑杆最高档名称 |
-| `CHATGPT_WEB_PROBE_PROMPT` | `你是什么模型？` | 临时身份探针提示词 |
-| `CHATGPT_WEB_PROBE_ACCEPT_ID` | `gpt-5.6-pro` | 接受分类标识 |
-| `CHATGPT_WEB_PROBE_FALLBACK_ID` | `gpt-5.5-mini` | 回退分类标识 |
-| `CHATGPT_WEB_PROBE_ACCEPT_PATTERN` | GPT-5.6 Pro 正则 | 接受回答的匹配表达式 |
-| `CHATGPT_WEB_PROBE_FALLBACK_PATTERN` | GPT-5.5 mini 正则 | 回退回答的匹配表达式 |
-| `CHATGPT_WEB_PRO_RECHECK_AFTER_CLOSE_MS` | `10800000` | 页面或浏览器关闭后，重新验证前继续复用可靠结果的时间 |
-
-参考配置见 [.env.example](.env.example)。项目不会自动读取 `.env`；请通过 MCP 客户端、Shell 或系统环境注入变量。
-
-## 新对话前的可选刷新
-
-`CHATGPT_WEB_REFRESH_BEFORE_NEW_CHAT=false`，默认不额外刷新旧页面。设置为 `true` 并重启 MCP 后，新建对话执行“检查草稿和附件 → 刷新当前页面 → 站内新建”。刷新失败或出现限流时停止，不重试。
-
-这与现有的“发送前刷新”是两个步骤。开启后，一次新建并发送通常会刷新两次，增加请求量和耗时；它用于按需处理旧页面状态，不是防限流功能。已完成的小规模测试只能说明该流程可用，不能证明额外刷新能降低限流。浏览器与网页仍默认常驻。
+普通 ChatGPT `chat_send` 在模型、思考强度和回答档位均省略时选择并复核 GPT-6 + 高；显式设置优先，无法核验时停止发送。Gemini 仅在用户明确指定时使用。临时 Pro 身份探针默认停用；不要把模型自我说明或网络标签当成实际服务模型的独立证明。
 
 ## 安全节流
 
@@ -314,15 +206,11 @@ chatgpt-web-mcp help     显示帮助
 
 ## 其他环境变量
 
-`CHATGPT_WEB_MCP_TOOLSET` 默认为 `full`，保持完整工具集兼容：注册现有 17 个 `chat_*`、29 个 `chatgpt_*` 和 17 个 `gemini_*` 工具。可在该 MCP 连接的环境配置中显式设为 `unified`，重启连接后仅注册这 17 个 `chat_*` 工具，不注册平台专属工具。尚未由统一工具替代的旧专属上传、诊断等功能在 `unified` 下不可通过这些旧工具调用；此模式不代表旧功能均已有统一替代。
-
-两种模式的 `request_id` 去重、`task_id` 恢复读取及 `session_id` 会话绑定规则不变；`tools/list` 不启动浏览器。升级不会替用户启用 `unified`，也不修改用户全局配置。[.env.example](.env.example) 只示例默认 `full`；项目不自动读取 `.env`，请通过 MCP 客户端环境配置注入变量。
-
 - `CHATGPT_WEB_CHROME`：浏览器可执行文件绝对路径
 - `CHATGPT_WEB_PROFILE`：专用浏览器配置目录
 - `CHATGPT_WEB_HEADLESS`：是否无界面运行，默认 `false`
 - `CHATGPT_WEB_ACTION_TIMEOUT_MS`：单次页面操作超时
-- `CHATGPT_WEB_RESPONSE_TIMEOUT_MS`：普通档位回答超时
+- `CHATGPT_WEB_RESPONSE_TIMEOUT_MS`：浏览器生成等待超时；与 Agent 的 20 分钟自动观察预算不同
 - `CHATGPT_WEB_RECONNECT_DELAY_MS`：浏览器异常重连间隔
 - `CHATGPT_WEB_AUTH_CACHE_MS`：登录状态本地缓存时间
 - `CHATGPT_WEB_PRO_RECHECK_AFTER_CLOSE_MS`：页面或浏览器关闭后的探针重验间隔，默认 3 小时
@@ -339,7 +227,7 @@ chatgpt-web-mcp help     显示帮助
 - 网络诊断不保存查询参数、Cookie、请求体、响应体或对话 ID。
 - 等待回答使用页面内的变更事件，不持续轮询页面。
 - 每次发送前只做一次当前对话整页刷新并重新校验；页面、对话 URL、用户草稿或附件状态异常时停止，不自动重试。
-- 对话轮换前的完整 transcript（含懒加载的较早消息）由 `chatgpt_archive_conversation` 或原子发送路径以 `0600` Markdown 文件保存；归档目录应按部署需要纳入受控的研究文档路径。
+- 自动轮换对话前，完整 transcript（含懒加载的较早消息）以 `0600` Markdown 文件保存；归档目录应按部署需要纳入受控的研究文档路径。
 - ChatGPT 网页不是稳定 API；选择器可能随页面更新而需要维护。
 - 模型自我说明和网络模型标记都不构成对实际服务模型的独立证明；尤其不能把“非 mini”当作 Pro 保证。
 

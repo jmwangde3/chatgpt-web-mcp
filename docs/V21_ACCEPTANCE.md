@@ -1,3 +1,5 @@
+> **Historical snapshot:** this document records an earlier full/unified toolset deployment. It is retained as historical evidence; the current Web-First patch supersedes its MCP tool-count and configuration descriptions with exactly four tools.
+
 # V2.1 稳定性与双 Skill 候选验收
 
 后续状态：首轮候选 `204bb07` 网页复审为 **NEEDS_FIX**；修复、兼容变化和当前门禁见 [复审问题闭环](V21_REVIEW_FIXES.md)。下文 302/154 等数字是首轮历史快照，不能作为修复后最终通过证据。

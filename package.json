@@ -46,12 +46,11 @@
     "CONTRIBUTING.md",
     ".env.example",
     "LICENSE",
-    "docs/UNIFIED_TASKS.md",
-    "scripts/verify-unified.js",
+    "docs/WEB_FIRST_TASKS.md",
+    "scripts/verify-web-first.js",
     "docs/MANAGEMENT.md",
     "docs/COMPARISONS_AND_INSTALL.md",
-    "docs/PARALLEL_SESSIONS.md",
-    "scripts/verify-comparison.js"
+    "docs/PARALLEL_SESSIONS.md"
   ],
   "scripts": {
     "start": "node src/index.js",
