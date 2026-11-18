@@ -99,7 +99,14 @@ export class PersistentBrowser {
       error.safeDiagnostics = await this.controlDiagnostics(); throw error;
     }
     this.preparing = true; this.attachState = 'CONNECTING'; this.attachStartedAt = Date.now(); this.attachTimedOutAt = null;
-    try { return await this.connectOnce(signal); }
+    try {
+      const lock = this.config.browserLaunchLock;
+      if (!lock) return await this.connectOnce(signal);
+      if (this.security) await this.security.paths({ protectedFiles: [lock, lock + '.reclaim'] });
+      const release = await acquireLock(lock, { signal, timeout: this.config.actionTimeout, operation: 'browser-launch' });
+      try { return await this.connectOnce(signal); }
+      finally { await release(); }
+    }
     catch (error) {
       if (this.attachState === 'CONNECTING' && !this.attaching) this.attachState = 'DISCONNECTED';
       throw error;
@@ -288,6 +295,7 @@ export class PersistentBrowser {
   }
 
   async terminate() {
+    if (this.config.preventTerminate) throw new WebUIError('SHARED_BROWSER', 'A single provider cannot terminate the shared MCP browser. Close it manually only after checking both providers.');
     // Never launch a browser just to close one.
     const initial = await readState(this.config.browserState);
     const endpoint = await browserEndpoint(initial.port, { fetchImpl: this.fetchImpl });

@@ -222,8 +222,10 @@ for (const changed of [false, true]) test(`public pending baseline recovery pres
   await page.evaluate(() => { const user = document.createElement('user-query'); user.innerHTML = '<div class="query-text"><p class="query-text-line">Original baseline</p></div>'; document.querySelector('#messages').append(user); });
   await b.writePrompt('Never submitted');
   await assert.rejects(b.submitPrompt({ wait: false, beforeSubmit: () => page.locator('[role="textbox"]').fill('Keep manual draft') }), { code: 'SEND_NOT_ATTEMPTED' });
-  const pending = (await b.state()).pending;
-  assert.equal(pending.baselineHash, textHash('Original baseline'));
+  assert.equal((await b.state()).pending, null);
+  const pending = { originalURL: page.url(), conversationURL: page.url(), userCount: 1,
+    responseCount: 0, promptHash: textHash('Never submitted'), baselineHash: textHash('Original baseline') };
+  await b.update({ pending });
   if (changed) await page.locator('.query-text-line').evaluate(node => { node.textContent = 'Changed prior message'; });
   if (changed) {
     await assert.rejects(b.resolvePending({ confirmed: true }), { code: 'TASK_IDENTITY_CHANGED' });

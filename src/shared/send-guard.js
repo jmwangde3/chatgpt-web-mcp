@@ -32,6 +32,7 @@ export function bootstrapSendGuard() {
     const target = event.composedPath();
     if (!target.includes(button)) return;
     let valid = false;
+    let rejectionReason = null;
     try {
       const url = new URL(location.href);
       valid = state.outcome === 'armed' && event.isTrusted &&
@@ -63,10 +64,17 @@ export function bootstrapSendGuard() {
             return nodes.length === binding.attachments.length && nodes.every((node, i) =>
               node === binding.attachments[i].node && node.outerHTML === binding.attachments[i].html);
           })() : Boolean(composer.closest('form')) && button.closest('form') === composer.closest('form')) &&
-        !doc.querySelector('[role="progressbar"], [data-state="uploading"], [data-testid*="upload-progress"]') &&
+        (() => {
+          const upload = doc.querySelector('[data-state="uploading"], [data-testid*="upload-progress"]');
+          const progress = [...doc.querySelectorAll('[role="progressbar"]')].some(node =>
+            !gemini || binding.region.contains(node) || visible(node));
+          if (upload || progress) { rejectionReason = 'ACTIVE_UPLOAD_OR_PROGRESS'; return false; }
+          return true;
+        })() &&
         ![...doc.querySelectorAll('[aria-busy="true"]')].some(node => visible(node) || (gemini ? binding?.region : composer.closest('form'))?.contains(node));
     } catch { valid = false; }
     state.outcome = valid ? 'allowed' : state.attempted ? 'uncertain' : 'rejected';
+    state.rejectionReason = rejectionReason;
     if (valid) state.attempted = true;
     if (!valid) { event.preventDefault(); event.stopImmediatePropagation(); }
   };
@@ -103,7 +111,7 @@ export function installSendGuard(input) {
       JSON.stringify(nodes.map(e => e.innerText)) === JSON.stringify(g.expectedAttachments),
       attachments: nodes.map(node => ({node, html: node.outerHTML})) };
   }
-  state.active = input; state.outcome = 'armed'; state.attempted = false;
+  state.active = input; state.outcome = 'armed'; state.attempted = false; state.rejectionReason = null;
   window[input.key] = state;
   return true;
 }
@@ -140,8 +148,13 @@ export async function guardedSend({ page, composer, button, expectedText, expect
     }
     // Once click begins, transport errors are ambiguous: never relabel them.
     await click(buttonHandle);
-    const outcome = await page.evaluate(key => window[key]?.outcome, key);
-    if (outcome === 'rejected') throw Object.assign(new Error('Final send validation rejected the click.'), { code: 'SEND_NOT_ATTEMPTED', sendOutcome: 'not_attempted' });
+    const { outcome, rejectionReason } = await page.evaluate(key => ({
+      outcome: window[key]?.outcome, rejectionReason: window[key]?.rejectionReason,
+    }), key);
+    if (outcome === 'rejected') {
+      const reason = rejectionReason === 'ACTIVE_UPLOAD_OR_PROGRESS' ? ' Active upload or progress detected.' : '';
+      throw Object.assign(new Error('Final send validation rejected the click.' + reason), { code: 'SEND_NOT_ATTEMPTED', sendOutcome: 'not_attempted' });
+    }
     if (outcome !== 'allowed') throw Object.assign(new Error('Final send outcome could not be verified.'), { code: 'SEND_UNCONFIRMED' });
   } finally {
     if (inspector) { await inspector.send('Runtime.releaseObjectGroup', {objectGroup:key}).catch(()=>{}); await inspector.detach().catch(()=>{}); }

@@ -67,9 +67,11 @@ export class GeminiBrowser {
     return controlRequest(request, { timeout, signal: this.signal, onInterrupt: () => this.close() });
   }
   async state() { return sessionView(await readState(this.config.runtimeState), this.sessionId, SESSION_FIELDS); }
-  async update(fields) {
+  async update(fields, { expectedPendingAttempt } = {}) {
     const raw = await readState(this.config.runtimeState);
-    const value = { ...sessionView(raw, this.sessionId, SESSION_FIELDS), ...fields };
+    const current = sessionView(raw, this.sessionId, SESSION_FIELDS);
+    if (expectedPendingAttempt !== undefined && current.pending?.attemptId !== expectedPendingAttempt) return current;
+    const value = { ...current, ...fields };
     await writeState(this.config.runtimeState, mergeSessionView(raw, value, this.sessionId, SESSION_FIELDS));
     return value;
   }
@@ -239,18 +241,28 @@ export class GeminiBrowser {
     if (s.url !== before.url || s.userCount !== before.userCount || s.draft !== before.draft || JSON.stringify(s.attachments) !== JSON.stringify(before.attachments)) throw new WebUIError("COMPOSER_CHANGED", "The draft, attachments, or conversation changed before sending.");
     const send = await this.first(SELECTORS.send);
     if (!send || !await send.isEnabled()) throw new WebUIError("SEND_UNAVAILABLE", "Gemini send button is unavailable; wait for uploads to complete.");
-    await guardedSend({ page: await this.page(), composer, button: send,
-      expectedText: s.draft, expectedURL: s.url, allowedOrigin: 'https://gemini.google.com',
-      gemini: { region: GEMINI_REGION, composer: SELECTORS.composer.join(','), send: SELECTORS.send.join(','),
-        user: SELECTORS.user, stop: SELECTORS.stop.join(','), attachments: SELECTORS.attachments,
-        userCount: s.userCount, expectedAttachments: s.attachments },
-      click: async button => {
-        // Pin attachments and nodes before either asynchronous persistence window.
-        await beforeSubmit?.();
-        await this.update({ pending: { originalURL: s.url, conversationURL: /\/app\/.+/.test(s.url) ? s.url : null, userCount: s.userCount, responseCount: s.responseCount, promptHash: hash(s.draft), baselineHash: textHash(s.lastUser || ''), startedAt: Date.now() }, lastSendAt: Date.now() });
-        await button.click({ timeout: this.config.actionTimeout });
-      },
-    });
+    const attemptId = randomUUID();
+    try {
+      await guardedSend({ page: await this.page(), composer, button: send,
+        expectedText: s.draft, expectedURL: s.url, allowedOrigin: 'https://gemini.google.com',
+        gemini: { region: GEMINI_REGION, composer: SELECTORS.composer.join(','), send: SELECTORS.send.join(','),
+          user: SELECTORS.user, stop: SELECTORS.stop.join(','), attachments: SELECTORS.attachments,
+          userCount: s.userCount, expectedAttachments: s.attachments },
+        click: async button => {
+          // Pin attachments and nodes before either asynchronous persistence window.
+          await beforeSubmit?.();
+          const startedAt = Date.now();
+          await this.update({ pending: { attemptId, originalURL: s.url, conversationURL: /\/app\/.+/.test(s.url) ? s.url : null, userCount: s.userCount, responseCount: s.responseCount, promptHash: hash(s.draft), baselineHash: textHash(s.lastUser || ''), startedAt }, lastSendAt: startedAt });
+          await button.click({ timeout: this.config.actionTimeout });
+        },
+      });
+    } catch (error) {
+      if (error.code === 'SEND_NOT_ATTEMPTED' && error.sendOutcome === 'not_attempted') {
+        try { await this.update({ pending: null }, { expectedPendingAttempt: attemptId }); }
+        catch { error.message += ' Local pending cleanup could not be confirmed.'; }
+      }
+      throw error;
+    }
     return wait ? this.waitForResponse({ timeoutMs }) : { submitted: true, pending: true, url: (await this.page()).url() };
   }
 

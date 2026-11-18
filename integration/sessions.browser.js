@@ -79,6 +79,31 @@ for (const url of ['https://chatgpt.com/', 'https://gemini.google.com/app']) {
   });
 }
 
+test('two providers can use the same session name in separate tabs of one Chrome window', async t => {
+  const { context } = await fixture(t);
+  const bindings = new Map();
+  const bind = url => sessionPage(context, {
+    sessionId: 'same_project',
+    bindings: bindings.get(url),
+    url,
+    persist: async tabs => bindings.set(url, tabs),
+  });
+  const chatgptUrl = 'https://chatgpt.com/';
+  const geminiUrl = 'https://gemini.google.com/app';
+  const chatgpt = await bind(chatgptUrl);
+  const gemini = await bind(geminiUrl);
+  assert.equal(await bind(chatgptUrl), chatgpt);
+  assert.equal(await bind(geminiUrl), gemini);
+  assert.equal(context.pages().length, 2);
+  const browserSession = await chrome.newBrowserCDPSession();
+  try {
+    const windowFor = async page => browserSession.send('Browser.getWindowForTarget', { targetId: await targetId(context, page) });
+    assert.equal((await windowFor(chatgpt)).windowId, (await windowFor(gemini)).windowId);
+  } finally {
+    await browserSession.detach();
+  }
+});
+
 test('closed session never rebinds to another tab or creates a replacement', async t => {
   const f = await fixture(t); const a = await f.bind('a'), b = await f.bind('b'); await a.close();
   await assert.rejects(f.bind('a'), { code: 'SESSION_TAB_MISSING' });
