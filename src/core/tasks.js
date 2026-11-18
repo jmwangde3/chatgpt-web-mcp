@@ -446,7 +446,7 @@ export class TaskKernel {
         if (!wait || terminal.has(latest.state) || (latest.state === 'uncertain' && !retryControlBusy) || Date.now() >= deadline) return { ...latest, timed_out: !terminal.has(latest.state) && Date.now() >= deadline };
         // Retry only a controller-cleanup error proven to occur before settle/cancel.
         if (retryControlBusy) {
-          await delay(Math.min(this.controlBusyRetryMs, Math.max(1, deadline - Date.now())), undefined, { signal: observationSignal });
+          await delay(this.controlBusyRetryMs, undefined, { signal: observationSignal });
           continue;
         }
         const progressKey = latest.progress
