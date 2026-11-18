@@ -47,6 +47,7 @@ import {
   RUNTIME_LOCK_FILE,
   RUNTIME_STATE_FILE,
   SEND_INTERVAL_MS,
+  sharedBrowserEnabled,
   SITE_ACTION_INTERVAL_MS,
   USER_DATA_DIR,
 } from "./config.js";
@@ -918,6 +919,8 @@ export class ChatGPTBrowser {
   constructor({ sessionId } = {}) { this.sessionId = validateSessionId(sessionId); }
   #runtime = new PersistentBrowser({
     browserState: BROWSER_STATE_FILE, profile: USER_DATA_DIR, runtimeState: RUNTIME_STATE_FILE, operationLock: OPERATION_LOCK_FILE,
+    browserLaunchLock: `${BROWSER_STATE_FILE}.launch.lock`,
+    preventTerminate: sharedBrowserEnabled(),
     taskLock: path.join(process.env.WEB_CHAT_DATA_DIR || path.join(os.homedir(), '.web-chat-mcp'), 'chatgpt', 'tasks.json.lock'),
     executable: CHROME_EXECUTABLE, url: CHATGPT_URL, headless: HEADLESS,
     actionTimeout: ACTION_TIMEOUT_MS, launchArgs: ['--start-maximized', '--new-window'],

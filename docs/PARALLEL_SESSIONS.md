@@ -29,3 +29,8 @@ For a follow-up, wait until that session's task completes, then send a new `requ
 Use the original `task_id` for all reads and recovery. A timeout is an observation boundary, not task failure. Keep the same `session_id` and request fingerprint; do not send a new prompt to compensate for uncertain delivery. The Agent's automatic wait budget is 20 minutes across 90-second `chat_result` calls; reaching it stops waiting only.
 
 Run `npm test`, `npm run smoke` and `npm run test:browser` for regression checks. Smoke verifies the four-tool MCP surface and default schema values. Live acceptance is opt-in through `node scripts/verify-web-first.js --send`.
+## Shared Chrome on the same machine
+
+Set `WEB_CHAT_SHARED_BROWSER=true` in the MCP server environment to use the existing ChatGPT dedicated Chrome for both providers, in separate tabs. Use the same setting for local login and diagnostic commands. This does not use your personal Chrome. Sign in to Gemini in the dedicated window if needed; the old Gemini profile and journal are not copied or deleted.
+
+Each provider retains its own runtime, task journal, operation lock, and session bindings. A Gemini task tied to an old independent browser is not automatically moved; finish it in the independent mode before switching. Ordinary disconnects leave the browser open. Close the shared Chrome manually only after both providers are idle.

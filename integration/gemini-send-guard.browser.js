@@ -21,7 +21,7 @@ const html = `<!doctype html><style>user-query,input-area,file-preview{display:b
 window.addEventListener('click',()=>window.captures++,true);
 document.querySelector('button').onclick=e=>{window.sends++;window.trusted=e.isTrusted;};</script>`;
 
-async function fixture(t, { early = true } = {}) {
+async function fixture(t, { early = true, persistRuntime = false } = {}) {
   const root = path.resolve(browserTestTempRoot());
   const directory = await fs.mkdtemp(path.join(root, 'gemini-send-guard-'));
   const context = await browser.newContext();
@@ -33,9 +33,16 @@ async function fixture(t, { early = true } = {}) {
   config.actionTimeout = 10000;
   const b = new GeminiBrowser(config, { connect: async () => context, disconnect: async () => {} });
   // Keep this boundary suite independent of Windows state-file rename behavior.
-  let state = {};
-  b.state = async () => structuredClone(state);
-  b.update = async fields => { state = { ...state, ...structuredClone(fields) }; return structuredClone(state); };
+  if (!persistRuntime) {
+    let state = {};
+    b.state = async () => structuredClone(state);
+    b.update = async (fields, { expectedPendingAttempt } = {}) => {
+      if (expectedPendingAttempt === undefined || state.pending?.attemptId === expectedPendingAttempt) {
+        state = { ...state, ...structuredClone(fields) };
+      }
+      return structuredClone(state);
+    };
+  }
   b.throttle = async () => {};
   // page() installs the context document-start script, never a late page script.
   if (early) await b.page();
@@ -52,6 +59,30 @@ test('formless Gemini region permits exactly one trusted send', async t => {
   await b.submitPrompt({ wait: false });
   assert.deepEqual(await page.evaluate(() => [window.sends, window.trusted]), [1, true]);
 });
+
+test('hidden generic progress outside the Gemini composer does not prevent a trusted send', async t => {
+  const { b, page } = await fixture(t);
+  await page.locator('file-preview').evaluate(node => node.remove());
+  await page.locator('main').evaluate(node => node.insertAdjacentHTML('beforeend', '<div role="progressbar" style="display:none"></div>'));
+  await b.submitPrompt({ wait: false });
+  assert.deepEqual(await page.evaluate(() => [window.sends, window.trusted]), [1, true]);
+});
+
+for (const { region, markup } of [
+  { region: 'main', markup: '<div role="progressbar">Working</div>' },
+  { region: 'input-area', markup: '<div role="progressbar" style="display:none"></div>' },
+  { region: 'main', markup: '<div data-state="uploading" style="display:none"></div>' },
+  { region: 'main', markup: '<div data-testid="upload-progress" style="display:none"></div>' },
+]) {
+  test(`Gemini keeps blocking progress or upload evidence in ${region}: ${markup}`, async t => {
+    const { b, page } = await fixture(t);
+    await page.locator(region).evaluate((node, snippet) => node.insertAdjacentHTML('beforeend', snippet), markup);
+    await assert.rejects(b.submitPrompt({ wait: false }), error =>
+      error.code === 'SEND_NOT_ATTEMPTED' && /Active upload or progress detected/.test(error.message));
+    assert.deepEqual(await page.evaluate(() => [window.sends, window.captures]), [0, 0]);
+    assert.equal((await b.state()).pending, null);
+  });
+}
 
 for (const mutation of ['url', 'case', 'space', 'attachment replacement', 'attachment label',
   'manual user', 'region replacement', 'second region', 'readonly', 'busy']) {
@@ -78,18 +109,58 @@ for (const mutation of ['url', 'case', 'space', 'attachment replacement', 'attac
       }, mutation);
     } }), e => e.code === 'SEND_NOT_ATTEMPTED' && e.sendOutcome === 'not_attempted');
     assert.deepEqual(await page.evaluate(() => [window.sends, window.captures]), [0, 0]);
-    assert.ok((await b.state()).pending);
+    assert.equal((await b.state()).pending, null);
   });
 }
 
 test('late attachment mutation during pending persistence is rejected', async t => {
   const { b, page } = await fixture(t);
   const update = b.update.bind(b);
-  b.update = async fields => { const result = await update(fields);
+  b.update = async (fields, options) => { const result = await update(fields, options);
     if (fields.pending) await page.locator('file-preview').evaluate(e => e.replaceWith(e.cloneNode(true)));
     return result; };
   await assert.rejects(b.submitPrompt({ wait: false }), e => e.code === 'SEND_NOT_ATTEMPTED');
   assert.equal(await page.evaluate(() => window.sends), 0);
+});
+
+test('confirmed rejection clears only its own persisted attempt and leaves the draft', async t => {
+  const { b, page } = await fixture(t, { persistRuntime: true });
+  const composer = page.locator('[contenteditable]');
+  const draft = await composer.innerText();
+  await assert.rejects(b.submitPrompt({ wait: false, beforeSubmit: () =>
+    page.locator('main').evaluate(node => node.insertAdjacentHTML('beforeend', '<div role="progressbar">Busy</div>')),
+  }), { code: 'SEND_NOT_ATTEMPTED' });
+  assert.equal((await b.state()).pending, null);
+  assert.equal(await composer.innerText(), draft);
+});
+
+test('a replacement pending attempt is not cleared after a rejected click', async t => {
+  const { b, page } = await fixture(t, { persistRuntime: true });
+  const update = b.update.bind(b);
+  const replacement = { attemptId: 'another-attempt' };
+  b.update = async (fields, options) => {
+    const result = await update(fields, options);
+    if (fields.pending) {
+      await update({ pending: replacement });
+      await page.locator('main').evaluate(node => node.insertAdjacentHTML('beforeend', '<div role="progressbar">Busy</div>'));
+    }
+    return result;
+  };
+  await assert.rejects(b.submitPrompt({ wait: false }), { code: 'SEND_NOT_ATTEMPTED' });
+  assert.deepEqual((await b.state()).pending, replacement);
+});
+
+test('an interrupted click with unknown outcome preserves the pending attempt', async t => {
+  const { b, page } = await fixture(t, { persistRuntime: true });
+  const update = b.update.bind(b);
+  b.update = async (fields, options) => {
+    const result = await update(fields, options);
+    if (fields.pending) await page.close();
+    return result;
+  };
+  await assert.rejects(b.submitPrompt({ wait: false }), error => error.code !== 'SEND_NOT_ATTEMPTED');
+  assert.ok((await b.state()).pending?.attemptId);
+  assert.equal(page.isClosed(), true);
 });
 
 test('nested Gemini layout ancestors and empty regions do not create another composer', async t => {

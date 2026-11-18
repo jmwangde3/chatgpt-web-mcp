@@ -4,6 +4,10 @@ import path from "node:path";
 
 export const CHATGPT_URL = process.env.CHATGPT_WEB_URL || "https://chatgpt.com/";
 
+export function sharedBrowserEnabled(env = process.env) {
+  return /^(1|true|yes)$/i.test(env.WEB_CHAT_SHARED_BROWSER || '');
+}
+
 export const USER_DATA_DIR = path.resolve(
   process.env.CHATGPT_WEB_PROFILE ||
     path.join(os.homedir(), ".chatgpt-web-mcp", "chrome-profile"),
