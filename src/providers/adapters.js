@@ -59,6 +59,7 @@ export function chatgptProvider(browser) {
     restore: (url) => browser.restoreTaskConversation(url),
     async prepare({ model, thinking_level, answer_tier } = {}) {
       await browser.assertActionsAllowed('chat_send');
+      await browser.recoverBlankConversationBeforeSend?.();
       await browser.ensureSignedIn();
       await browser.assertComposerEmpty('chat_send');
       await browser.ensureConversationCapacity({ allowRotate: false });

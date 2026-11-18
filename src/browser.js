@@ -1691,6 +1691,27 @@ export class ChatGPTBrowser {
     );
   }
 
+  async recoverBlankConversationBeforeSend() {
+    const page = await this.page();
+    const url = page.url();
+    if (!conversationIdFromUrl(url)) return;
+    const blank = await page.evaluate((expectedUrl) => {
+      if (location.href !== expectedUrl || document.readyState !== "complete" || !document.body) return false;
+      if (document.body.innerText.trim()) return false;
+      return !document.querySelector(
+        "form, textarea, [contenteditable], [data-message-author-role], [aria-busy=true], " +
+        "[role=progressbar], [data-testid=stop-button], input, iframe, button",
+      );
+    }, url);
+    if (!blank || page.url() !== url) return;
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    this.#signedInUntil = 0;
+    if (page.url() !== url) {
+      throw new ChatGPTWebError("恢复空白页面后会话地址已改变，已停止发送。", { url: page.url() });
+    }
+  }
+
   async assertComposerEmpty(action) {
     const composer = await this.composer();
     if (!composer) return;
