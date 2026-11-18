@@ -975,11 +975,16 @@ export class ChatGPTBrowser {
       if (snapshot.generating || (!allowIdle && !snapshot.response)) throw new WebUIError('GENERATION_UNCONFIRMED', 'The original response is not idle.');
       const active = snapshot.activeGeneration;
       if (!active?.active) return;
-      if (active.userMessageId !== expected.userMessageId || (expected.managedTaskId && active.managedTaskId !== expected.managedTaskId)) {
+      const sameUnconfirmedSend = !active.userMessageId && expected.managedTaskId &&
+        active.managedTaskId === expected.managedTaskId;
+      if ((!sameUnconfirmedSend && active.userMessageId !== expected.userMessageId) ||
+          (expected.managedTaskId && active.managedTaskId !== expected.managedTaskId)) {
         throw new WebUIError('TASK_IDENTITY_CHANGED', 'The original generation identity changed.');
       }
       await withRuntimeState(async state => {
-        if (state.activeGeneration?.startedAt !== active.startedAt || state.activeGeneration?.userMessageId !== expected.userMessageId) throw new WebUIError('TASK_IDENTITY_CHANGED', 'The generation changed before settling.');
+        if (state.activeGeneration?.startedAt !== active.startedAt ||
+            state.activeGeneration?.userMessageId !== active.userMessageId ||
+            state.activeGeneration?.managedTaskId !== active.managedTaskId) throw new WebUIError('TASK_IDENTITY_CHANGED', 'The generation changed before settling.');
         return { state: { ...state, activeGeneration: null, lastGenerationCompletedAt: Date.now() } };
       });
       return;
@@ -3561,7 +3566,7 @@ export class ChatGPTBrowser {
   }
 
   async verifyTaskMessage(expected) {
-    const snapshot = await this.getLatestResponse({ includeTranscript: false, includeIdentityCandidates: true, skipGenerationRelease: true });
+    const snapshot = await this.getLatestResponse({ includeTranscript: false, includeIdentityCandidates: true, skipGenerationRelease: true, recovery: expected });
     if (!expected?.userMessageId || snapshot.url !== expected.url || snapshot.lastUserMessageId !== expected.userMessageId ||
         !snapshot.identitySnapshotValid || !matchesUserPrompt(expected.promptHash, snapshot.lastUserMessage || '', snapshot.identityCandidates)) {
       throw new WebUIError('TASK_IDENTITY_CHANGED', 'The last user message is no longer the original task.');
@@ -3711,6 +3716,7 @@ export class ChatGPTBrowser {
     beforeSubmit,
     baseline,
     managedTaskId,
+    expectedPromptHash,
     onIdentityConfirmed,
   } = {}) {
     const refreshResult = refresh
@@ -3726,6 +3732,7 @@ export class ChatGPTBrowser {
     if (!composer) throw new ChatGPTWebError("没有找到提示词输入框。");
     await this.assertComposerWritable("submit-prompt", composer);
     const promptText = await this.composerText(composer);
+    const promptHash = expectedPromptHash ?? textHash(promptText);
     const exactDraft = await composer.evaluate(node => ('value' in node ? node.value : node.innerText ?? node.textContent ?? ''));
     const expectedURL = page.url();
     if (!normalize(promptText)) throw new ChatGPTWebError("输入框为空，无法发送。");
@@ -3764,29 +3771,24 @@ export class ChatGPTBrowser {
         managedTaskId: managedTaskId || null,
         userMessageId: null,
         userCount: userBefore + 1,
-        promptHash: textHash(promptText),
+        promptHash,
         baselineResponse: assistantBeforeText,
         status: wait ? "waiting" : "unobserved",
       },
     });
 
-    await page.waitForFunction(
-      ({ selectors, count, lastId }) => {
-        const elements = document.querySelectorAll(selectors);
-        const last = [...elements].at(-1);
-        const id = last?.getAttribute('data-message-id') || last?.closest('[data-chatgpt-search-message-ids]')?.getAttribute('data-chatgpt-search-message-ids')?.trim().split(/\s+/u)[0];
-        return elements.length > count || Boolean(lastId && id && id !== lastId);
-      },
-      { selectors: SELECTORS.userMessages.join(", "), count: userBefore, lastId: userBeforeSnapshot.stableLastId },
-      { timeout: ACTION_TIMEOUT_MS },
-    ).catch(() => {});
-
-    const userAfterSnapshot = await this.userMessageSnapshot({ includeIdentityCandidates: true });
-    const userMessageAppendVerified =
-      userAfterSnapshot.count > userBeforeSnapshot.count ||
-      (Boolean(userBeforeSnapshot.lastId) &&
-        Boolean(userAfterSnapshot.lastId) &&
-        userBeforeSnapshot.lastId !== userAfterSnapshot.lastId);
+    const acknowledgementDeadline = Date.now() + ACTION_TIMEOUT_MS;
+    let userAfterSnapshot, userMessageAppendVerified;
+    do {
+      this.signal()?.throwIfAborted();
+      userAfterSnapshot = await this.userMessageSnapshot({ includeIdentityCandidates: true });
+      const stableId = userAfterSnapshot.stableLastId;
+      userMessageAppendVerified = Boolean(stableId && stableId !== userBeforeSnapshot.stableLastId &&
+        (userAfterSnapshot.count > userBeforeSnapshot.count || userBeforeSnapshot.stableLastId) &&
+        matchesUserPrompt(promptHash, userAfterSnapshot.lastText, userAfterSnapshot.identityCandidates));
+      if (userMessageAppendVerified || Date.now() >= acknowledgementDeadline) break;
+      await page.waitForTimeout(Math.min(150, Math.max(1, acknowledgementDeadline - Date.now())));
+    } while (Date.now() < acknowledgementDeadline);
     const sameTurn =
       userBeforeSnapshot.count === userAfterSnapshot.count &&
       userBeforeSnapshot.lastId &&
@@ -3794,7 +3796,7 @@ export class ChatGPTBrowser {
     if (
       sameTurn &&
       textHash(userBeforeSnapshot.lastText) !== textHash(userAfterSnapshot.lastText) &&
-      matchesUserPrompt(textHash(promptText), userAfterSnapshot.lastText, userAfterSnapshot.identityCandidates)
+      matchesUserPrompt(promptHash, userAfterSnapshot.lastText, userAfterSnapshot.identityCandidates)
     ) {
       throw new ChatGPTWebError(
         "发送后未创建新的用户消息，检测到原用户消息内容被替换；已停止后续网页操作。",
@@ -3809,7 +3811,7 @@ export class ChatGPTBrowser {
       );
     }
 
-    if (!userMessageAppendVerified || !userAfterSnapshot.stableLastId || userAfterSnapshot.stableLastId === userBeforeSnapshot.stableLastId || !matchesUserPrompt(textHash(promptText), userAfterSnapshot.lastText, userAfterSnapshot.identityCandidates)) {
+    if (!userMessageAppendVerified) {
       const error = new ChatGPTWebError('发送后未确认新增的用户消息；已保留任务，请检查原页面，不要自动重发。', {
         code: 'SEND_UNCONFIRMED', userMessageCountBefore: userBefore, userMessageCountAfter: userAfterSnapshot.count,
       });
@@ -3867,7 +3869,7 @@ export class ChatGPTBrowser {
             ownerPid: null,
             assistantBefore,
             userCount: userBefore + 1,
-            promptHash: textHash(promptText),
+            promptHash,
             baselineResponse: assistantBeforeText,
             status: "client-cancelled-generation-may-continue",
           },
@@ -4563,11 +4565,19 @@ export class ChatGPTBrowser {
     };
   }
 
-  async getLatestResponse({ includeSettings = false, includeTranscript = true, includeIdentityCandidates = false, skipGenerationRelease = false } = {}) {
+  async getLatestResponse({ includeSettings = false, includeTranscript = true, includeIdentityCandidates = false, skipGenerationRelease = false, recovery } = {}) {
     const page = await this.page();
     const runtime = await readRuntimeState();
-    if (runtime.activeGeneration?.active && runtime.activeGeneration.url !== page.url()) {
-      throw new WebUIError('GENERATION_CONVERSATION_MISMATCH', 'Return to the original generation conversation; its state was preserved.');
+    const active = runtime.activeGeneration;
+    if (active?.active && active.url !== page.url()) {
+      const prior = new URL(active.url);
+      const provisional = prior.pathname === '/' || /^\/c\/(?:WEB:|local-chatgpt:)[^/]+$/.test(decodeURIComponent(prior.pathname));
+      const sameRecoveredSend = provisional && recovery?.url === page.url() && recovery.managedTaskId &&
+        active.managedTaskId === recovery.managedTaskId && (!active.userMessageId ||
+          (active.userMessageId === recovery.userMessageId && active.promptHash === recovery.promptHash));
+      if (!sameRecoveredSend) {
+        throw new WebUIError('GENERATION_CONVERSATION_MISMATCH', 'Return to the original generation conversation; its state was preserved.');
+      }
     }
     const body = await page.locator("body").innerText().catch(() => "");
     const rateLimit = classifyRateLimitText(body);

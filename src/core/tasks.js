@@ -306,7 +306,13 @@ export class TaskKernel {
       }
       const adapter = this.adapter(id, task.session_id);
       if (strictIdentity(adapter) && task.state === 'completed' && (!task.targetUserMessageId || task.messageIdentityVersion !== 1)) return taskView(task);
-      if (strictIdentity(adapter) && !terminal.has(task.state)) {
+      const recoverUnconfirmed = strictIdentity(adapter) && !cancel && !refresh && conversation_url && adapter.restore &&
+        task.state === 'uncertain' && !task.targetUserMessageId && !task.conversation_url &&
+        ['SEND_UNCONFIRMED', 'LEGACY_IDENTITY_UNVERIFIED', 'GENERATION_CONVERSATION_MISMATCH'].includes(task.error?.code) &&
+        task.baseline?.url && adapter.isRoot(canonicalURL(task.baseline.url)) &&
+        task.baseline.userCount === 0 && task.baseline.responseCount === 0 &&
+        task.baseline.userMessageId === null && task.baseline.responseId === null;
+      if (strictIdentity(adapter) && !terminal.has(task.state) && !recoverUnconfirmed) {
         try { requireIdentityTarget(task); } catch (error) {
           task.state = 'uncertain'; task.error = { code: error.code, message: error.message };
           task.updated_at = Date.now(); await save(); return taskView(task);
@@ -330,11 +336,25 @@ export class TaskKernel {
           const expected = conversation_url ? canonicalURL(conversation_url) : known;
           const root = adapter.isRoot(expected) || adapter.isProvisional?.(expected);
           if (!root && adapter.restore && (task.session_id || conversation_url || revalidate)) await adapter.restore(expected);
-          const observed = await adapter.inspect();
+          const observed = await adapter.inspect(recoverUnconfirmed ? { recovery: {
+            url: expected, managedTaskId: taskId, promptHash: task.promptHash,
+          } } : undefined);
           signal?.throwIfAborted();
           const url = canonicalURL(observed.url);
           if (url !== expected && !root) throw new WebUIError('CONVERSATION_CHANGED', 'Open the task conversation before resuming it.');
-          if (strictIdentity(adapter)) {
+          if (recoverUnconfirmed) {
+            // Only an explicitly selected, completed first turn can recover an
+            // unconfirmed send. Do not adopt a user ID for cancellation.
+            const occupied = Object.values(state.tasks).some(other => other !== task &&
+              [other.conversation_url, other.baseline?.url].some(value => value && canonicalURL(value) === url));
+            if (root || occupied || observed.userCount !== 1 || observed.responseCount !== 1 ||
+                !observed.complete || observed.busy || !observed.text || !observed.responseId?.trim()) {
+              throw new WebUIError('SEND_UNCONFIRMED', 'Recovery requires an unclaimed conversation with exactly one completed turn.');
+            }
+            verifyTaskIdentity(task, observed, { confirming: true, adapter });
+            task.targetUserMessageId = observed.userMessageId;
+            task.messageIdentityVersion = 1;
+          } else if (strictIdentity(adapter)) {
             requireIdentityTarget(task);
             verifyTaskIdentity(task, observed, { adapter });
           }
