@@ -42,7 +42,7 @@ test('chat_send defaults provider to ChatGPT and retains explicit Gemini selecti
   const tools = register(kernel);
   const send = tools.get('chat_send');
   const defaults = send.config.inputSchema.parse({ request_id: 'r1', prompt: 'design this' });
-  assert.equal(defaults.provider, 'chatgpt');
+  assert.equal(defaults.provider, undefined);
   assert.deepEqual(defaults.files, []);
   assert.equal(defaults.web_search, false);
   assert.equal(defaults.existing_draft, false);

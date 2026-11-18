@@ -19,7 +19,8 @@ export function geminiProvider(browser) {
     capabilities: { files: true, models: true, history: true, archive: 'loaded-messages', cancellation: true, sessions: true, retry: true },
     isRoot: (url) => url === 'https://gemini.google.com/app',
     async prepare({ prompt, files, existing_draft } = {}) {
-      await browser.editable({ empty: !existing_draft });
+      if (browser.prepareSendPage) await browser.prepareSendPage({ existingDraft: existing_draft });
+      else await browser.editable({ empty: !existing_draft });
       if (existing_draft) {
         const draft = await browser.snapshot();
         const normalized = text => text.replace(/\s+/g, ' ').trim();
@@ -58,6 +59,7 @@ export function chatgptProvider(browser) {
     restore: (url) => browser.restoreTaskConversation(url),
     async prepare({ model, thinking_level, answer_tier } = {}) {
       await browser.assertActionsAllowed('chat_send');
+      await browser.recoverBlankConversationBeforeSend?.();
       await browser.ensureSignedIn();
       await browser.assertComposerEmpty('chat_send');
       await browser.ensureConversationCapacity({ allowRotate: false });

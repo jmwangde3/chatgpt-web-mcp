@@ -220,6 +220,17 @@ test('context installation covers subsequent new pages', async t => {
   assert.equal(await page.evaluate(() => typeof window.__webChatSendGate.handler), 'function');
 });
 
+test('preflight refreshes an empty unguarded Gemini tab before preparing a send', async t => {
+  const { b, page } = await fixture(t, { early: false });
+  await page.locator('file-preview').evaluate(node => node.remove());
+  await page.locator('[contenteditable]').fill('');
+  await page.context().unrouteAll();
+  await page.context().route('**/*', route => route.fulfill({ contentType: 'text/html', body: html.replace('<file-preview>report.txt</file-preview>', '') }));
+  await b.prepareSendPage();
+  assert.equal(await page.evaluate(() => typeof window.__webChatSendGate?.handler), 'function');
+  assert.equal(await page.evaluate(() => window.sends), 0);
+});
+
 test('CDP refuses a late Gemini guard behind an earlier window capture', async t => {
   const { b, page } = await fixture(t, { early: false });
   // Materialize locator utilities first, then deliberately install too late.

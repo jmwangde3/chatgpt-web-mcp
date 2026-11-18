@@ -101,3 +101,10 @@ npm run test:browser
 ```
 
 Smoke 必须通过真实 MCP `tools/list` 确认恰好四个工具，并核对 `chat_send.provider=chatgpt`、`chat_result.wait=true`、`chat_result.timeoutMs=90000` 默认值。Live acceptance 是可选的，运行 `node scripts/verify-web-first.js --send` 才会创建合成对话并发送测试标记；不加 `--send` 只检查四工具接口。
+## 显式多平台同题对比
+
+用 `chat_send` 传入 `providers: ["chatgpt", "gemini"]`、`request_id` 和 `prompt`。不要同时传 `provider`、模型、思考强度、回答档位、网页搜索或已有草稿设置。只有显式选择的两个平台收到相同内容和明确列出的附件；默认仍只发给 ChatGPT。
+
+发送返回 `fanout:` 父任务 ID 和两个独立子任务。对父 ID 调用 `chat_result` 并行读取，各子项可部分失败，单次共用同一观察预算。父任务读取永不发送；`queued` 子项只在用完全相同的原请求与 ID 调用 `chat_send` 时补齐。已有子项不会重发。取消、刷新或指定会话 URL 时使用子任务 ID。
+
+Gemini 在预检发现发送保护未安装时，只会在确认编辑器为空且没有附件、上传或挂起生成后刷新原标签一次。发现未知页面、已有草稿或刷新后身份变化时停止，不重发。
