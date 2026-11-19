@@ -1,5 +1,7 @@
 # ChatGPT & Gemini Web MCP
 
+> **维护说明（0.7.15）**：新的个人 Codex Web-First 工作流优先使用独立的 `web-first-ask` + `ask-bridge` CLI。本仓库转为维护/回退用途，继续保留四工具 MCP、ChatGPT + Gemini 双 Provider 同题对比及旧任务恢复；不再承担新一代 CLI 入口。两个项目必须使用不同的 Chrome Profile 和 CDP 端口。
+
 ## 代码复审 Skill
 
 `gh-review` 是 ChatGPT Web 代码复审的统一入口（auto/github/local），`local-review` 处理显式本地证据或被委派的回退；两项复用已安装的 `web-chat`，不会自动切换宿主模型、注册第二份 MCP 或取得外发许可。成对安装、更新、卸载及 npm 包取文件见 [REVIEW_SKILLS.md](docs/REVIEW_SKILLS.md)。
@@ -9,6 +11,13 @@
 ChatGPT 的 `chat_send` 在未指定模型、思考强度及回答档位时，发送前选择并重新核验 **GPT-6 + 高**；显式设置优先，无法核验时停止发送。Gemini 仅在用户明确指定时使用。已有 MCP 连接须重连以加载更新。
 
 本仓库采用 Web-First：需要分析、研究、设计、技术判断或根因定位的任务默认先交给 ChatGPT Web；本地 Codex/Agents 只收集最少必要事实，再按网页专家给出的逐文件实施规格执行和测试。纯确定性操作及用户明确要求本地执行时可绕过。默认偏好为网页 GPT-6 高、Codex 6.1 Terra medium；MCP 不切换宿主模型，也不授权上传整个工作区或秘密。
+
+## 浏览器生命周期与任务恢复修复（0.7.15）
+
+- CDP 断开现在只关闭 Playwright 本地控制连接，不再向远端 Chrome 发送 `Browser.close`；MCP 进程重启或单次管理 CLI 退出后，专用 Chrome 标签页和登录状态仍可保留。真正关闭浏览器仍只能走显式、身份核验后的 terminate 路径。
+- `doctor --repair` 只回收 PID 已确认 DEAD / PID_REUSED 的锁；live/unknown 锁保留。任务日志、uncertain 任务和 request_id 不会被批量归档或删除。
+- ChatGPT 发送缺少稳定消息 ID 时，仍不降低发送身份标准；只有原页面与任务基线完全一致、空闲且可核验时，显式 `abandon --confirm` 才能释放本地跟踪。
+- Playwright 固定为 1.62.1，以锁定经过验证的 CDP detach 行为；运行 `npm run verify:cdp-disconnect` 可用真实 Chrome 验证断开后标签仍存在。
 
 ## 浏览器稳定性修复（0.7.11）
 

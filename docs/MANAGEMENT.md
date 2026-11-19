@@ -10,6 +10,7 @@ Run from a checkout with `node src/cli.js`, or use the installed `web-chat-mcp` 
 node src/cli.js providers
 node src/cli.js doctor
 node src/cli.js doctor --provider gemini
+node src/cli.js doctor --repair
 node src/cli.js tasks --provider all --state uncertain --limit 20 --offset 0
 node src/cli.js result gemini:REPLACE-WITH-TASK-UUID --wait --timeout 90000
 node src/cli.js cancel gemini:REPLACE-WITH-TASK-UUID
@@ -26,7 +27,7 @@ Task output is private: it may include conversation URLs, error text and, for `r
 
 `chat_doctor({})` checks both providers; `chat_doctor({"provider":"gemini"})` checks one. The CLI `doctor` and MCP tool use the same implementation. Checks cover Node version, browser executable existence, readable local runtime state, rate-limit and pending-operation flags, saved browser PID liveness, lock snapshots and task-journal validity/counts.
 
-Diagnostics create no locks, launch no browsers and modify no state. The report uses allowlisted fields and excludes local paths, task IDs, conversation URLs, response text, account data and raw errors. It reports `scope: "local_only"` and `sign_in_verified: false`. `ok: true` means no failing local checks; warnings can still describe pending tasks or rate limits. This is not a sign-in, website compatibility or model availability test. Missing state files are normal before first use. Malformed journals fail closed. Lock observations can change immediately after inspection, and no lock is automatically deleted by doctor.
+Diagnostics create no locks, launch no browsers and modify no state. The report uses allowlisted fields and excludes local paths, task IDs, conversation URLs, response text, account data and raw errors. The explicit CLI-only `doctor --repair` mode is separate: it reclaims only independently verified DEAD/PID_REUSED lock owners through the normal lock protocol. LIVE/UNKNOWN locks are preserved; task journals and uncertain tasks are never modified or archived. It reports `scope: "local_only"` and `sign_in_verified: false`. `ok: true` means no failing local checks; warnings can still describe pending tasks or rate limits. This is not a sign-in, website compatibility or model availability test. Missing state files are normal before first use. Malformed journals fail closed. Lock observations can change immediately after inspection. Plain `doctor` remains read-only; `doctor --repair` is the only explicit dead-owner lock recovery path. Never delete MCP locks manually or use broad cleanup commands.
 
 ## Recovery and pagination
 

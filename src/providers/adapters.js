@@ -89,7 +89,9 @@ export function chatgptProvider(browser) {
       if (s.rateLimited && !readableAnswer) throw new WebUIError('RATE_LIMITED', 'ChatGPT displays a rate-limit warning without a completed answer. No retry was sent.');
       return { url: s.url, userCount: s.userMessageCount, mountedUserCount: s.userMessageCount,
         userMessageId: s.lastUserMessageId || null, responseId: s.lastResponseMessageId || null,
-        responseCount: s.assistantMessageCount, lastUser: s.identitySnapshotValid === false ? '' : s.lastUserMessage || '', identityCandidates: s.identitySnapshotValid === false ? [] : s.identityCandidates || [], text: s.response || '', busy: s.generating, complete: !!s.response && !s.generating, model: s.model };
+        responseCount: s.assistantMessageCount, lastUser: s.identitySnapshotValid === false ? '' : s.lastUserMessage || '', identityCandidates: s.identitySnapshotValid === false ? [] : s.identityCandidates || [],
+        identitySnapshotValid: s.identitySnapshotValid === true, activeGeneration: s.activeGeneration || null,
+        generationOwnerExited: s.generationOwnerExited === true, text: s.response || '', busy: s.generating, complete: !!s.response && !s.generating, model: s.model };
     },
     settle: (expected, options) => browser.settleManagedGeneration(expected, options),
     async cancel(expected) {

@@ -25,7 +25,7 @@ async function fixture(t, id = 'chatgpt') {
     };
   }
   const provider = { ...adapter(), forSession: adapter };
-  const kernel = new TaskKernel([provider], { directory });
+  const kernel = new TaskKernel([provider], { directory, verifyStoragePaths: async () => {} });
   const input = session => ({ provider: id, session_id: session, request_id: session || 'legacy', prompt: `question ${session}` });
   return { kernel, provider, pages, sends, cancelled, settings, directory, input, journal: path.join(directory, id, 'tasks.json') };
 }
@@ -38,7 +38,7 @@ for (const id of ['chatgpt', 'gemini']) {
     assert.equal((await f.kernel.list(id)).active_tasks.length, 2);
     await assert.rejects(f.kernel.send({ ...f.input('a'), request_id: 'a-second' }), { code: 'TASK_ACTIVE' });
     await assert.rejects(f.kernel.run(id, () => assert.fail(), { sessionId: 'a' }), { code: 'TASK_ACTIVE' });
-    const restarted = new TaskKernel([f.provider], { directory: f.directory });
+    const restarted = new TaskKernel([f.provider], { directory: f.directory, verifyStoragePaths: async () => {} });
     assert.equal((await restarted.send(f.input('b'))).replayed, true);
     assert.equal((await restarted.read(a.task_id, { cancel: true })).state, 'cancelled');
     assert.deepEqual(f.cancelled, ['a']); assert.equal(f.pages.get('b').busy, true);
@@ -89,7 +89,7 @@ for (const oldSession of [undefined, 'old-session']) {
       assert.deepEqual(oldPage, oldSnapshot);
       assert.deepEqual((await readState(f.journal)).tasks[old.task_id], before);
       await assert.rejects(f.kernel.send({ ...f.input(oldSession), request_id: 'old-again' }), { code: 'TASK_ACTIVE' });
-      const restarted = new TaskKernel([f.provider], { directory: f.directory });
+      const restarted = new TaskKernel([f.provider], { directory: f.directory, verifyStoragePaths: async () => {} });
       assert.equal((await restarted.send(f.input(oldSession))).replayed, true);
       assert.deepEqual(f.sends, [oldSession || 'legacy', 'fresh']);
     });
@@ -114,7 +114,7 @@ test('historical replay has no page operations; explicit thinking is part of req
   adapter.prepareSettings = true;
   adapter.browser.runExclusive = async () => assert.fail('replay must not touch browser');
   f.provider.forSession = () => adapter;
-  const restarted = new TaskKernel([f.provider], { directory: f.directory });
+  const restarted = new TaskKernel([f.provider], { directory: f.directory, verifyStoragePaths: async () => {} });
   assert.equal((await restarted.send(input)).task_id, original.task_id);
   await assert.rejects(restarted.send({...input, thinking_level:'高'}), {code:'IDEMPOTENCY_CONFLICT'});
   assert.equal(f.sends.length, 1);

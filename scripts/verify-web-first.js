@@ -10,6 +10,9 @@ const provider = process.argv.includes('--gemini') ? 'gemini' : 'chatgpt';
 const session_id = `live_acceptance_${randomUUID().replaceAll('-', '').slice(0, 20)}`;
 const request_id = randomUUID();
 const marker = `WEB_FIRST_MCP_OK_${randomUUID().slice(0, 8)}`;
+const serverEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+  key === 'R345_TEST_ROOT' || /^(WEB_CHAT_|CHATGPT_WEB_|GEMINI_WEB_)/.test(key),
+));
 let client;
 
 async function connect() {
@@ -17,6 +20,7 @@ async function connect() {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [fileURLToPath(new URL('../src/index.js', import.meta.url))],
+    env: serverEnv,
     stderr: 'pipe',
   });
   transport.stderr?.on('data', chunk => process.stderr.write(chunk));
@@ -44,6 +48,7 @@ try {
       request_id,
       prompt: `Integration test only. Reply with this exact marker and nothing else: ${marker}`,
     };
+    console.log(JSON.stringify({ synthetic_request: input }));
     const submitted = await call('chat_send', input);
     assert.equal(submitted.state, 'submitted', JSON.stringify(submitted.error));
     console.log(`Submitted ${submitted.task_id}; reconnecting MCP before reading.`);

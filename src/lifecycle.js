@@ -37,12 +37,16 @@ export async function loginProviders(kernel, { provider = 'all', timeout = 90000
   for (const id of ids) {
     const browser = kernel.provider(id).browser;
     const deadline = Date.now() + timeout;
-    console.error(`Sign in manually in the dedicated ${id} window if needed. Browser will remain open.`);
+    console.error(`Sign in manually in the dedicated ${id} Chrome tab if needed. Chrome will remain open.`);
     while (true) {
       const signedIn = await kernel.run(id, async () => {
         await browser.page();
         return id === 'chatgpt' ? browser.signedIn() : (await browser.snapshot()).signedIn;
-      }, { signal, name: 'login' });
+      }, { signal, name: 'login' }).catch(error => {
+        // Gemini can be temporarily on Google's sign-in origin during manual login.
+        if (id === 'gemini' && error.code === 'LOGIN_REQUIRED') return false;
+        throw error;
+      });
       if (signedIn) { results.push({ provider: id, signed_in: true }); break; }
       if (Date.now() >= deadline) throw new WebUIError('LOGIN_TIMEOUT', `Manual login timed out for ${id}. Run login again when ready.`);
       await delay(Math.min(5000, deadline - Date.now()), undefined, { signal });

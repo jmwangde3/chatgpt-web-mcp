@@ -84,12 +84,15 @@ test('statistics count state occupancy, blocking mismatches and legacy sessions 
   assert.deepEqual(journalStatistics(state, { now: 10000 }), {
     total_count: 3, state_counts: { uncertain: 1, running: 1, completed: 1 }, active_count: 2,
     blocking_count: 2, blocking_flag_mismatch_count: 2, active_session_count: 2,
+    legacy_identity_unverified_count: 1, send_unconfirmed_count: 0,
     oldest_active_task: { state: 'uncertain', created_at: 1000 }, oldest_active_age_ms: 9000, oldest_active_state: 'uncertain',
+    oldest_uncertain_age_ms: 9000,
   });
   assert.equal(JSON.stringify(state), before);
   assert.deepEqual(journalStatistics(journal(), { now: 10000 }), {
     total_count: 0, state_counts: {}, active_count: 0, blocking_count: 0, blocking_flag_mismatch_count: 0,
     active_session_count: 0, oldest_active_task: null, oldest_active_age_ms: null, oldest_active_state: null,
+    legacy_identity_unverified_count: 0, send_unconfirmed_count: 0, oldest_uncertain_age_ms: null,
   });
 });
 

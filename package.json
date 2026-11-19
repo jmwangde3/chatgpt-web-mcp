@@ -1,6 +1,6 @@
 {
   "name": "chatgpt-web-mcp",
-  "version": "0.7.14",
+  "version": "0.7.15",
   "type": "module",
   "description": "A local MCP server for ChatGPT and Gemini web UIs with isolated persistent browser profiles.",
   "license": "MIT",
@@ -50,7 +50,10 @@
     "scripts/verify-web-first.js",
     "docs/MANAGEMENT.md",
     "docs/COMPARISONS_AND_INSTALL.md",
-    "docs/PARALLEL_SESSIONS.md"
+    "docs/PARALLEL_SESSIONS.md",
+    "docs/RECOVERY-2026-11-19.md",
+    "CHANGELOG.md",
+    "scripts/verify-cdp-disconnect.js"
   ],
   "scripts": {
     "start": "node src/index.js",
@@ -61,6 +64,7 @@
     "smoke": "node scripts/smoke-mcp.js",
     "test": "node --test --test-reporter=tap",
     "test:browser": "node --test --test-reporter=tap integration/gemini.browser.js integration/panel.browser.js integration/chatgpt-messages.browser.js integration/sessions.browser.js integration/composer-menu.browser.js integration/send-guard.browser.js integration/windows-security.browser.js integration/fenced-identity.browser.js integration/gemini-send-guard.browser.js integration/stop-guard.browser.js integration/windows-network-capability.browser.js integration/chatgpt-identity-guards.browser.js",
+    "verify:cdp-disconnect": "node scripts/verify-cdp-disconnect.js",
     "verify:package": "node scripts/verify-package.js",
     "setup": "node src/cli.js setup",
     "upgrade": "node src/cli.js upgrade",
@@ -72,7 +76,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "playwright-core": "^1.54.2",
+    "playwright-core": "1.62.1",
     "zod": "^4.6.7"
   },
   "contributors": [

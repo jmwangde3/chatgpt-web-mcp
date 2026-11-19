@@ -37,15 +37,15 @@ export function isResponseFailure(text = '') {
 
 export class GeminiBrowser {
   controllerDiagnostics() { return this.runtime.controlDiagnostics?.() || Promise.resolve({controller_state:'DISCONNECTED'}); }
-  constructor(config = geminiConfig(), runtime = new PersistentBrowser(config), { sessionId } = {}) {
+  constructor(config = geminiConfig(), runtime = new PersistentBrowser(config), { sessionId, verifyStoragePaths = verifyDataPaths } = {}) {
     this.sessionId = validateSessionId(sessionId);
-    this.config = config; this.runtime = runtime; this.queue = Promise.resolve();
+    this.config = config; this.runtime = runtime; this.verifyStoragePaths = verifyStoragePaths; this.queue = Promise.resolve();
     this.currentPage = null; this.signal = undefined; this.networkLimited = false;
   }
 
   runExclusive(operation, { signal } = {}) {
     const execute = async () => {
-      await verifyDataPaths({ operationLock: this.config.operationLock, runtimeState: this.config.runtimeState });
+      await this.verifyStoragePaths({ operationLock: this.config.operationLock, runtimeState: this.config.runtimeState });
       const release = await acquireLock(this.config.operationLock, { signal, timeout: this.config.actionTimeout });
       this.signal = signal;
       const onAbort = () => { void this.runtime.disconnect().catch(() => {}); };

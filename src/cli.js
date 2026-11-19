@@ -29,7 +29,7 @@ Usage:
   chatgpt-web-mcp report [--out ABS_PATH]  Export redacted local diagnostics
   chatgpt-web-mcp status   Inspect the current local browser state
   chatgpt-web-mcp providers                 List installed providers
-  chatgpt-web-mcp doctor [--provider all]   Redacted local diagnostics (no browser)
+  chatgpt-web-mcp doctor [--provider all] [--repair]  Redacted diagnostics; --repair reclaims verified dead-owner locks only
   chatgpt-web-mcp tasks [--provider all] [--state uncertain] [--limit 20] [--offset 0]
   chatgpt-web-mcp result TASK_ID [--wait] [--timeout 30000]
   chatgpt-web-mcp cancel TASK_ID             Cancel the verified task generation

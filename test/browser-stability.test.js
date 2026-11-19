@@ -56,7 +56,14 @@ test('a stalled CDP attach times out without spawning another browser and dispos
     return true;
   });
   await assert.rejects(runtime.connect(), { code: 'CONTROL_BUSY' });
-  const browser = new EventEmitter(); browser.close = async () => { closes++; };
+  const browser = new EventEmitter();
+  let connected = true;
+  browser._shouldCloseConnectionOnClose = false;
+  browser.isConnected = () => connected;
+  browser.close = async () => {
+    assert.equal(browser._shouldCloseConnectionOnClose, false);
+    closes++; connected = false; browser.emit('disconnected');
+  };
   resolve(browser);
   await new Promise(setImmediate);
   assert.equal(runtime.browser, null); assert.equal(attempts, 1); assert.equal(closes, 1);
@@ -71,7 +78,8 @@ test('aborting during attach does not publish a late context or kill the dedicat
   const attaching = runtime.connect(signal.signal);
   while (!resolve) await new Promise(setImmediate);
   signal.abort(); await assert.rejects(attaching, /abort/i);
-  resolve({ close: async () => { closes++; } });
+  resolve({ _shouldCloseConnectionOnClose: false, isConnected: () => true,
+    close: async function () { assert.equal(this._shouldCloseConnectionOnClose, false); closes++; } });
   await new Promise(setImmediate);
   assert.equal(closes, 1); assert.equal(runtime.context, null);
 });
@@ -84,7 +92,9 @@ test('failed cleanup of a late controller blocks another attachment', async t =>
     return new Promise(done => { resolve = done; });
   } });
   await assert.rejects(runtime.connect(), { code: 'CONTROL_CONNECT_TIMEOUT' });
-  resolve({ close: async () => { throw Error('disconnect rejected'); }, isConnected: () => true });
+  resolve({ _shouldCloseConnectionOnClose: false, close: async function () {
+    assert.equal(this._shouldCloseConnectionOnClose, false); throw Error('disconnect rejected');
+  }, isConnected: () => true });
   await new Promise(setImmediate);
   await assert.rejects(runtime.connect(), { code: 'CONTROL_BUSY' });
   assert.equal(attempts, 1);
@@ -102,7 +112,7 @@ test('live unreachable or mismatched profiles fail closed before launching', asy
 
 test('cleanup failure still releases the Gemini operation lock', async t => {
   const { config } = await fixture(t);
-  const browser = new GeminiBrowser(config, { disconnect: async () => { throw Error('controller cleanup failed'); } });
+  const browser = new GeminiBrowser(config, { disconnect: async () => { throw Error('controller cleanup failed'); } }, { verifyStoragePaths: async () => {} });
   await assert.rejects(browser.runExclusive(async () => 'observed'), /cleanup failed/);
   assert.deepEqual(await readState(config.operationLock), {});
 });

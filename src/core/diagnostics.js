@@ -5,13 +5,66 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readState, processAlive, browserEndpoint } from '../shared/persistent-browser.js';
 import { validateJournal, journalStatistics } from './tasks.js';
-import { readLockSnapshot } from '../shared/locks.js';
+import { acquireLock, readLockSnapshot } from '../shared/locks.js';
 import { Installer, installDirectory } from '../maintenance.js';
 
 async function localState(file) {
   const state = await readState(file);
   if (!state || typeof state !== 'object' || Array.isArray(state)) throw new Error('Invalid local state');
   return state;
+}
+
+/**
+ * Explicit maintenance action. Reclaim only lock files whose recorded owner
+ * is independently proven DEAD or PID_REUSED. Live/unknown owners are preserved.
+ * Task journals and uncertain tasks are never modified or archived here.
+ */
+export async function repairStaleLocks(kernel, ids = [...kernel.providers.keys()], {
+  timeoutMs = 1500, acquire = acquireLock, verifyPaths = verifyDataPaths, inspect = undefined,
+} = {}) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 10000) {
+    throw Object.assign(new Error('timeoutMs must be 100..10000.'), { code: 'INVALID_TIMEOUT' });
+  }
+  const locks = [];
+  for (const id of ids) {
+    const adapter = kernel.provider(id);
+    const config = adapter.localConfig || {};
+    const taskFile = path.join(kernel.directory, id, 'tasks.json');
+    const candidates = [
+      ['operation_lock', config.operationLock],
+      ['task_lock', taskFile + '.lock'],
+      ['runtime_lock', config.runtimeState ? config.runtimeState + '.lock' : null],
+    ].filter(([, file]) => typeof file === 'string' && file.length > 0);
+    for (const [name, file] of candidates) {
+      const before = await readLockSnapshot(file, inspect ? { inspect } : undefined);
+      if (!before.exists) {
+        locks.push({ provider: id, lock: name, status: 'absent' });
+        continue;
+      }
+      if (!['DEAD', 'PID_REUSED'].includes(before.owner_state)) {
+        locks.push({ provider: id, lock: name, status: 'preserved', owner_state: before.owner_state });
+        continue;
+      }
+      try {
+        if (name === 'task_lock') {
+          await verifyPaths({ dataDirectories: [path.dirname(taskFile)], taskJournal: taskFile, protectedFiles: [file, file + '.reclaim'] }, { allowCreate: false });
+        } else {
+          if (!config.profile) throw Object.assign(new Error('Profile security boundary is unavailable.'), { code: 'PROFILE_SECURITY_UNVERIFIED' });
+          await verifyPaths({ ...config, protectedFiles: [...(config.protectedFiles || []), file, file + '.reclaim'] }, { allowCreate: false });
+        }
+        const release = await acquire(file, { timeout: timeoutMs, operation: 'doctor-repair', ...(inspect ? { inspect } : {}) });
+        await release();
+        const after = await readLockSnapshot(file, inspect ? { inspect } : undefined);
+        locks.push({ provider: id, lock: name, status: after.exists ? 'reclaimed_or_reacquired' : 'reclaimed',
+          previous_owner_state: before.owner_state });
+      } catch (error) {
+        locks.push({ provider: id, lock: name, status: error.code === 'BUSY' ? 'busy' : 'failed',
+          code: ['BUSY', 'PROFILE_ACL_UNSAFE', 'PROFILE_MISSING', 'PROFILE_SECURITY_UNVERIFIED', 'EACCES', 'EPERM'].includes(error.code) ? error.code : 'REPAIR_FAILED' });
+      }
+    }
+  }
+  const ok = locks.every(item => !['failed', 'busy'].includes(item.status));
+  return { scope: 'local_only', ok, locks, task_journal_modified: false, uncertain_tasks_modified: false };
 }
 
 // Read-only local inspection: no locks created, no browser launch, no page access.
@@ -57,7 +110,9 @@ export async function diagnose(kernel, ids = [...kernel.providers.keys()]) {
         const owner = await readLockSnapshot(file);
         if (!owner.exists) { check(name, 'pass', 'AVAILABLE', 'none'); continue; }
         checks.push({ name, status: 'warn', code: owner.owner_state === 'ALIVE' ? 'IN_USE' : ['DEAD','PID_REUSED'].includes(owner.owner_state) ? 'STALE_OWNER' : 'UNREADABLE_LOCK', owner,
-          action: 'Snapshot only. Age is not reclamation authority. Restart an unresponsive live MCP owner; preserve unknown owners.' });
+          action: ['DEAD','PID_REUSED'].includes(owner.owner_state)
+            ? 'Run node src/cli.js doctor --repair to reclaim only verified dead-owner locks. This does not archive or alter uncertain tasks.'
+            : 'Snapshot only. Age is not reclamation authority. Preserve live/unknown owners; do not delete lock files manually.' });
       } catch (error) {
         if (error.code === 'ENOENT') check(name, 'pass', 'AVAILABLE', 'none');
         else check(name, 'warn', 'UNREADABLE_LOCK', 'Lock may be initializing or damaged. Inspect locally before changing it.');
@@ -68,7 +123,7 @@ export async function diagnose(kernel, ids = [...kernel.providers.keys()]) {
       const statistics = journalStatistics(journal);
       const counts = statistics.state_counts;
       const active = Object.values(journal.tasks).filter(t => !['completed', 'cancelled', 'failed', 'abandoned'].includes(t.state));
-      checks.push({ name: 'task_journal', status: active.length ? 'warn' : 'pass', code: active.length ? 'TASK_ACTIVE' : 'READABLE', counts, ...statistics, active_state: journal.active ? journal.tasks[journal.active].state : null, action: active.length ? 'Use chat_tasks, then chat_result for existing tasks. Independent work may use a new session_id; do not resend uncertain work.' : 'none' });
+      checks.push({ name: 'task_journal', status: active.length ? 'warn' : 'pass', code: active.length ? 'TASK_ACTIVE' : 'READABLE', counts, ...statistics, active_state: journal.active ? journal.tasks[journal.active].state : null, action: active.length ? 'Use node src/cli.js tasks --provider ' + id + ' to inspect. Resume confirmed tasks by task_id. Uncertain tasks are never bulk-archived; use abandon --confirm only after exact baseline verification.' : 'none' });
     } catch { check('task_journal', 'fail', 'INVALID_JOURNAL', 'Inspect and restore the local journal privately; preserve duplicate-request records.'); }
     if (kernel.verifyStorage) {
       const file = path.join(kernel.directory, id, 'tasks.json');

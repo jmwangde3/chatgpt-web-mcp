@@ -89,13 +89,14 @@ test('ChatGPT session context isolates production runtime writes while preservin
       import { readFile, writeFile } from 'node:fs/promises';
       import { ChatGPTBrowser } from './src/browser.js';
       import { RUNTIME_STATE_FILE } from './src/config.js';
+      const verifyStoragePaths = async () => {};
       const generation = { active: true, ownerPid: process.pid, url:'https://chatgpt.com/c/original' };
       const { createHash } = await import('node:crypto');
       const lastUser = 'session policy prompt';
       const expected = { url: generation.url, userCount: 1,
         promptHash: createHash('sha256').update(lastUser).digest('hex') };
       await writeFile(RUNTIME_STATE_FILE, JSON.stringify({activeGeneration:generation,sessions:{a:{activeGeneration:generation},b:{activeGeneration:generation}}}), { encoding: 'utf8', mode: 0o600 });
-      const a = new ChatGPTBrowser({sessionId:'a'}), b = new ChatGPTBrowser({sessionId:'b'}), fresh = new ChatGPTBrowser({sessionId:'new'});
+      const a = new ChatGPTBrowser({sessionId:'a', verifyStoragePaths}), b = new ChatGPTBrowser({sessionId:'b', verifyStoragePaths}), fresh = new ChatGPTBrowser({sessionId:'new', verifyStoragePaths});
       a.firstVisible = async () => null;
       a.page = async () => ({ evaluate: async () => ({ url: generation.url,
         count: 1, isLast: true, lastText: lastUser, identityCandidates: [] }) });

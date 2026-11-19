@@ -60,6 +60,7 @@ import { SELECTORS, TEXT } from "./selectors.js";
 // mentioning the word "thinking" is not discarded.
 const THINKING_WRAPPER_RE = /^\s*(?:thinking|思考)(?:\s*(?:[.…:：]|$))/iu;
 const sessionContext = new AsyncLocalStorage();
+const storageVerificationContext = new AsyncLocalStorage();
 const SESSION_FIELDS = ['activeGeneration', 'sessionInitialized'];
 
 function normalize(value) {
@@ -699,8 +700,8 @@ async function readRuntimeState() {
   return sessionView(await readRawRuntimeState(), sessionContext.getStore(), SESSION_FIELDS);
 }
 
-export async function withRuntimeState(update, { signal } = {}) {
-  await verifyDataPaths({ runtimeState: RUNTIME_STATE_FILE });
+export async function withRuntimeState(update, { signal, verifyPaths = storageVerificationContext.getStore() || verifyDataPaths } = {}) {
+  await verifyPaths({ runtimeState: RUNTIME_STATE_FILE });
   const release = await acquireLock(RUNTIME_LOCK_FILE, { signal, timeout: ACTION_TIMEOUT_MS, operation: 'runtime-state' });
   try {
     const raw = await readRawRuntimeState();
@@ -885,8 +886,8 @@ export function generationCompletionEvidence(runtime, { url, generating, respons
       String(responseText).trim() !== String(generation.baselineResponse || '').trim()));
 }
 
-async function acquireOperationLock(operation, signal) {
-  await verifyDataPaths({ operationLock: OPERATION_LOCK_FILE });
+async function acquireOperationLock(operation, signal, verifyPaths = storageVerificationContext.getStore() || verifyDataPaths) {
+  await verifyPaths({ operationLock: OPERATION_LOCK_FILE });
   return acquireLock(OPERATION_LOCK_FILE, { signal, timeout: ACTION_TIMEOUT_MS, operation });
 }
 
@@ -916,7 +917,10 @@ export function parseAdvancedRowValue(text, labels) {
 
 export class ChatGPTBrowser {
   messageIdentityVersion = 1;
-  constructor({ sessionId } = {}) { this.sessionId = validateSessionId(sessionId); }
+  constructor({ sessionId, verifyStoragePaths = verifyDataPaths } = {}) {
+    this.sessionId = validateSessionId(sessionId);
+    this.verifyStoragePaths = verifyStoragePaths;
+  }
   #runtime = new PersistentBrowser({
     browserState: BROWSER_STATE_FILE, profile: USER_DATA_DIR, runtimeState: RUNTIME_STATE_FILE, operationLock: OPERATION_LOCK_FILE,
     browserLaunchLock: `${BROWSER_STATE_FILE}.launch.lock`,
@@ -994,10 +998,23 @@ export class ChatGPTBrowser {
     }
     // Check before getLatestResponse, which can itself clear completed state.
     const page = await this.page();
-    const identity = await page.evaluate(`(() => { const selectors = ${JSON.stringify(SELECTORS.userMessages.join(','))}; const nodes = [...document.querySelectorAll(selectors)]; const identity = nodes.length ? (${readUserMessageIdentityDOM.toString()})(nodes.at(-1), selectors) : { url: location.href, count: 0, isLast: true, lastText: '', identityCandidates: [] }; return { ...identity, responseCount: document.querySelectorAll(${JSON.stringify(SELECTORS.assistantMessages.join(','))}).length }; })()`);
+    const identity = await page.evaluate(`(() => {
+      const selectors = ${JSON.stringify(SELECTORS.userMessages.join(','))};
+      const assistantSelectors = ${JSON.stringify(SELECTORS.assistantMessages.join(','))};
+      const nodes = [...document.querySelectorAll(selectors)];
+      const identity = nodes.length ? (${readUserMessageIdentityDOM.toString()})(nodes.at(-1), selectors) : { url: location.href, count: 0, isLast: true, lastText: '', identityCandidates: [], stableLastId: null };
+      const responses = [...document.querySelectorAll(assistantSelectors)];
+      const last = responses.at(-1) || null;
+      const direct = last?.getAttribute('data-message-id');
+      const ids = last?.closest('[data-chatgpt-search-message-ids]')?.getAttribute('data-chatgpt-search-message-ids')?.trim().split(/\s+/u).filter(Boolean) || [];
+      const responseId = direct || (new Set(ids).size === 1 ? ids[0] : null);
+      return { ...identity, responseCount: responses.length, responseId };
+    })()`);
     if (!expected || !identity.isLast || identity.url !== expected.url || identity.count !== expected.userCount ||
         !matchesUserPrompt(expected.baselineOnly ? expected.baselineHash : expected.promptHash, identity.lastText, expected.baselineOnly ? [] : identity.identityCandidates) ||
-        (expected.baselineOnly && identity.responseCount !== expected.responseCount)) {
+        (expected.baselineOnly && identity.responseCount !== expected.responseCount) ||
+        (expected.baselineOnly && Object.hasOwn(expected, 'baselineUserMessageId') && (identity.stableLastId || null) !== (expected.baselineUserMessageId || null)) ||
+        (expected.baselineOnly && Object.hasOwn(expected, 'baselineResponseId') && (identity.responseId || null) !== (expected.baselineResponseId || null))) {
       throw new ChatGPTWebError('Original task identity changed; generation state was preserved.');
     }
     const snapshot = await this.getLatestResponse({ includeTranscript: false, includeIdentityCandidates: true });
@@ -1005,12 +1022,17 @@ export class ChatGPTBrowser {
     if (!expected || (snapshot.userMessageCount > 0 && snapshot.identitySnapshotValid === false) || snapshot.url !== expected.url ||
         snapshot.userMessageCount !== expected.userCount ||
         !matchesUserPrompt(baseline ? expected.baselineHash : expected.promptHash, snapshot.lastUserMessage || '', baseline ? [] : snapshot.identityCandidates) ||
-        (baseline && snapshot.assistantMessageCount !== expected.responseCount)) {
+        (baseline && snapshot.assistantMessageCount !== expected.responseCount) ||
+        (baseline && Object.hasOwn(expected, 'baselineUserMessageId') && (snapshot.lastUserMessageId || null) !== (expected.baselineUserMessageId || null)) ||
+        (baseline && Object.hasOwn(expected, 'baselineResponseId') && (snapshot.lastResponseMessageId || null) !== (expected.baselineResponseId || null))) {
       throw new ChatGPTWebError('Original task identity changed; generation state was preserved.');
     }
     if (snapshot.generating) throw new ChatGPTWebError("回答仍在生成，不能解除任务状态。");
     if (snapshot.activeGeneration?.active) {
-      if (snapshot.activeGeneration.url !== snapshot.url || (!allowIdle && !generationCompletionEvidence({ activeGeneration: snapshot.activeGeneration }, {
+      if (snapshot.activeGeneration.url !== snapshot.url ||
+          (expected?.managedTaskId && snapshot.activeGeneration.managedTaskId !== expected.managedTaskId) ||
+          (expected?.baselineOnly && expected?.managedTaskId && snapshot.generationOwnerExited !== true) ||
+          (!allowIdle && !generationCompletionEvidence({ activeGeneration: snapshot.activeGeneration }, {
         url: snapshot.url, generating: snapshot.generating, responseCount: snapshot.assistantMessageCount, responseText: snapshot.response,
       }))) throw new ChatGPTWebError('Original generation completion remains unverified.');
       await updateRuntimeState({ activeGeneration: null, lastGenerationInterruptedAt: Date.now() });
@@ -1049,7 +1071,8 @@ export class ChatGPTBrowser {
         finally { this.#requestSignal = null; await release(); }
       }
     };
-    const scoped = () => sessionContext.run(this.sessionId, execute);
+    const scoped = () => sessionContext.run(this.sessionId, () =>
+      storageVerificationContext.run(this.verifyStoragePaths, execute));
     const run = this.#queue.then(scoped, scoped);
     this.#queue = run.catch(() => {});
     return run;
@@ -4625,7 +4648,8 @@ export class ChatGPTBrowser {
     const snapshotURL = page.url();
     const identitySnapshot = (includeIdentityCandidates || runtime.activeGeneration?.active) && renderedUserCount
       ? await this.userMessageSnapshot({ includeIdentityCandidates: true }) : null;
-    const identityValid = Boolean(identitySnapshot && identitySnapshot.count === renderedUserCount && snapshotURL === page.url() && identitySnapshot.lastText);
+    const identityValid = snapshotURL === page.url() && (renderedUserCount === 0 ||
+      Boolean(identitySnapshot && identitySnapshot.count === renderedUserCount && identitySnapshot.lastText));
     // A completed response can leave an empty assistant placeholder after
     // streaming finishes. Preserve the PR's node-count/change completion rule.
     const generationComplete = generationCompletionEvidence(runtime, {
@@ -4633,7 +4657,7 @@ export class ChatGPTBrowser {
     }) || Boolean(runtime.activeGeneration?.userMessageId && lastAssistantId &&
       lastAssistantId !== runtime.activeGeneration.assistantBeforeId && lastAssistantText && !stop && !streaming);
     const ownerExited = generationIsStale(runtime);
-    let generationReleased = !skipGenerationRelease && generationComplete && identityValid &&
+    let generationReleased = !skipGenerationRelease && generationComplete && Boolean(identitySnapshot) && identityValid &&
       (runtime.activeGeneration.messageIdentityVersion === 1
         ? Boolean(runtime.activeGeneration.userMessageId && runtime.activeGeneration.userMessageId === identitySnapshot.stableLastId)
         : runtime.activeGeneration.userCount === identitySnapshot.count) &&
@@ -4642,7 +4666,7 @@ export class ChatGPTBrowser {
       generationReleased = await withRuntimeState(async state => {
         if (state.activeGeneration?.startedAt !== runtime.activeGeneration.startedAt || state.activeGeneration?.userMessageId !== runtime.activeGeneration.userMessageId) return { state, result: false };
         return { state: { ...state, activeGeneration: null, lastGenerationCompletedAt: Date.now() }, result: true };
-      });
+      }, { verifyPaths: this.verifyStoragePaths });
     }
     const generationUnconfirmed =
       runtime.activeGeneration?.active && !generationReleased;
@@ -4683,9 +4707,9 @@ export class ChatGPTBrowser {
       url: page.url(),
       conversationId: conversationIdFromUrl(page.url()),
       lastUserMessage: latestUserText,
-      lastUserMessageId: identityValid ? identitySnapshot.stableLastId || null : null,
+      lastUserMessageId: identityValid ? identitySnapshot?.stableLastId || null : null,
       lastResponseMessageId: lastAssistantId,
-      ...(includeIdentityCandidates ? { identityCandidates: identityValid ? identitySnapshot.identityCandidates : [], identitySnapshotValid: identityValid } : {}),
+      ...(includeIdentityCandidates ? { identityCandidates: identityValid ? identitySnapshot?.identityCandidates || [] : [], identitySnapshotValid: identityValid } : {}),
       userMessageCount: userCount,
       response: latestAssistantText,
       assistantMessageCount: assistantCount,
