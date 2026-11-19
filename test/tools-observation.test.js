@@ -9,7 +9,9 @@ function setup() {
     providers: new Map([['chatgpt', {}], ['gemini', {}]]),
     run: async (provider, fn, options) => {
       calls.push({ provider, options });
-      return fn({ listHistory: async input => ({ items: [{ id: 'history-1' }], scope: 'session', complete: false, input }) });
+      return fn({ listHistory: async input => provider === 'chatgpt'
+        ? { conversations: [{ id: 'history-1' }], returned: 1, input }
+        : { conversations: [], scope: 'currently loaded sidebar', input } });
     },
   };
   registerWebFirstTools({ registerTool: (name, config, handler) => handlers.set(name, { config, handler }) }, kernel);
@@ -22,7 +24,11 @@ test('chat_history reads the requested ChatGPT session without navigation or mut
   const input = tool.config.inputSchema.parse({ session_id: 'study', query: 'paper', limit: 10 });
   const result = await tool.handler(input, {});
   const body = JSON.parse(result.content[0].text);
-  assert.equal(body.scope, 'session');
+  assert.equal(body.provider, 'chatgpt');
+  assert.equal(body.session_id, 'study');
+  assert.equal(body.scope, 'currently loaded sidebar');
+  assert.deepEqual(body.conversations, [{ id: 'history-1' }]);
+  assert.equal(body.returned, 1);
   assert.equal(body.complete, false);
   assert.deepEqual(body.input, { query: 'paper', limit: 10 });
   assert.equal(calls.length, 1);
@@ -36,7 +42,12 @@ test('chat_history can explicitly read Gemini without exposing provider-specific
   const { handlers, calls } = setup();
   const tool = handlers.get('chat_history');
   const input = tool.config.inputSchema.parse({ provider: 'gemini', session_id: 'gemini-study' });
-  await tool.handler(input, {});
+  const result = await tool.handler(input, {});
+  const body = JSON.parse(result.content[0].text);
+  assert.equal(body.provider, 'gemini');
+  assert.equal(body.session_id, 'gemini-study');
+  assert.equal(body.scope, 'currently loaded sidebar');
+  assert.equal(body.complete, false);
   assert.equal(calls[0].provider, 'gemini');
   assert.equal(calls[0].options.readOnly, true);
   assert.equal(calls[0].options.sessionId, 'gemini-study');

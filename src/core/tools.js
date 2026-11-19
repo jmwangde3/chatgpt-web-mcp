@@ -124,7 +124,16 @@ export function registerWebFirstTools(server, kernel) {
     },
     (input, signal) => kernel.run(
       input.provider,
-      browser => browser.listHistory({ query: input.query, limit: input.limit }),
+      async browser => {
+        const history = await browser.listHistory({ query: input.query, limit: input.limit });
+        return {
+          ...history,
+          provider: input.provider,
+          session_id: input.session_id ?? null,
+          scope: history.scope ?? 'currently loaded sidebar',
+          complete: history.complete ?? false,
+        };
+      },
       { signal, readOnly: true, sessionId: input.session_id, name: 'chat_history' },
     ),
   );
