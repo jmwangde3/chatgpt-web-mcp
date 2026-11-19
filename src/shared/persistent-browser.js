@@ -18,6 +18,26 @@ export class WebUIError extends Error {
   constructor(code, message) { super(message); this.name = "WebUIError"; this.code = code; }
 }
 
+/**
+ * Playwright 1.62.1 connectOverCDP uses Browser.close() to close the
+ * server-side CDP transport only (chromeTransport.closeAndWait()). Do not set
+ * _shouldCloseConnectionOnClose: that flag belongs to connect() and bypasses
+ * the connectOverCDP server cleanup path, leaving the local close pending.
+ * Fail closed if the expected connectOverCDP contract is unavailable.
+ */
+export async function disconnectCDPConnection(browser) {
+  if (!browser || typeof browser.isConnected !== 'function' || typeof browser.close !== 'function') {
+    throw new WebUIError('CDP_DISCONNECT_UNSUPPORTED', 'The Playwright CDP connection cannot be safely detached. Browser state was preserved.');
+  }
+  if (!browser.isConnected()) return;
+  if (!Object.prototype.hasOwnProperty.call(browser, '_shouldCloseConnectionOnClose') ||
+      typeof browser._shouldCloseConnectionOnClose !== 'boolean' ||
+      browser._shouldCloseConnectionOnClose !== false) {
+    throw new WebUIError('CDP_DISCONNECT_UNSUPPORTED', 'Expected the connectOverCDP detach contract; Browser.close was not called.');
+  }
+  await browser.close();
+}
+
 export async function readState(file, missingValue = {}) {
   try { return JSON.parse(await fs.readFile(file, "utf8")); }
   catch (error) { if (error.code === "ENOENT") return missingValue; throw error; }
@@ -282,12 +302,12 @@ export class PersistentBrowser {
 
   async disconnectController(browser) {
     this.attachState = 'DISCONNECTING';
-    const closing = Promise.resolve().then(() => browser.close());
+    const closing = Promise.resolve().then(() => disconnectCDPConnection(browser));
     this.disconnecting = closing;
     void closing.then(() => { if (this.disconnecting === closing) { this.disconnecting = null; this.attachState = this.attaching ? 'ATTACH_TIMEOUT_PENDING' : 'DISCONNECTED'; } }, () => {
       // A failed close with a live controller poisons this runtime. Do not let
       // the next request overlap an unconfirmed controller cleanup.
-      if (!browser.isConnected() && this.disconnecting === closing) { this.disconnecting = null; this.attachState = 'DISCONNECTED'; }
+      if (typeof browser?.isConnected === 'function' && browser.isConnected() === false && this.disconnecting === closing) { this.disconnecting = null; this.attachState = 'DISCONNECTED'; }
       else this.attachState = 'CONTROLLER_POISONED';
     });
     try { await controlRequest(closing, { timeout: 5000, code: 'CONTROL_DISCONNECT_TIMEOUT' }); }

@@ -23,6 +23,9 @@ const { acquireLock } = await import('../src/shared/locks.js');
 const { ownProcessIdentity } = await import('../src/shared/process-identity.js');
 // Populate the real self-identity cache before short lock deadlines start.
 await ownProcessIdentity();
+const verifyTestPaths = async () => {};
+const withTestRuntimeState = (update, options = {}) =>
+  withRuntimeState(update, { ...options, verifyPaths: verifyTestPaths });
 const exited = spawn(process.execPath, ['-e', ''], { windowsHide: true });
 await once(exited, 'exit');
 const deadPid = exited.pid;
@@ -39,14 +42,14 @@ const seed = async () => {
 const bytes = () => fs.readFile(RUNTIME_STATE_FILE);
 
 // These public-method stubs model observations only, never a Chromium session.
-function browser({ pageURL = url, text = 'changed complete reply', stop = false, streaming = false, failure } = {}) {
-  const instance = new ChatGPTBrowser();
+function browser({ pageURL = url, text = 'changed complete reply', stop = false, streaming = false, userCount = 1, failure } = {}) {
+  const instance = new ChatGPTBrowser({ verifyStoragePaths: verifyTestPaths });
   instance.page = async () => {
     if (failure) throw failure;
     return { url: () => pageURL, locator: () => ({ innerText: async () => '' }) };
   };
   instance.assistantLocator = () => ({ count: async () => 1, last: () => ({ innerText: async () => text }) });
-  instance.userLocator = () => ({ count: async () => 1,
+  instance.userLocator = () => ({ count: async () => userCount,
     last: () => ({ evaluate: async () => 'original prompt' }) });
   instance.userMessageSnapshot = async () => ({ count: 1, lastText: 'original prompt', identityCandidates: [] });
   instance.firstVisible = async () => stop ? { visible: true } : null;
@@ -82,6 +85,18 @@ test('dead owner plus same URL and complete changed reply clears generation', as
   assert.equal(state.sentinel, 'preserve');
   assert.ok(state.lastGenerationCompletedAt > 0);
   assert.deepEqual(await instance.assertActionsAllowed(), { allowed: true });
+});
+
+test('completed assistant without a rendered user turn cannot release generation identity', async () => {
+  const state = await seed();
+  const before = await bytes();
+  const instance = browser({ userCount: 0 });
+  const result = await latest(instance);
+  assert.equal(result.generating, false);
+  assert.equal(result.generationOwnerExited, true);
+  assert.deepEqual(result.activeGeneration, state.activeGeneration);
+  await denied(instance);
+  assert.deepEqual(await bytes(), before);
 });
 
 test('legacy generation without user identity cannot auto-release after a complete changed reply', async () => {
@@ -163,7 +178,7 @@ test('real live runtime lock cannot be removed because its mtime is old', async 
     const old = new Date(Date.now() - 120000);
     await fs.utimes(RUNTIME_LOCK_FILE, old, old);
     let called = false;
-    await assert.rejects(withRuntimeState(async state => { called = true; return { state }; }), { code: 'BUSY' });
+    await assert.rejects(withTestRuntimeState(async state => { called = true; return { state }; }), { code: 'BUSY' });
     assert.equal(called, false);
     assert.deepEqual(await fs.readFile(RUNTIME_LOCK_FILE), owner);
     assert.deepEqual(await bytes(), before);
@@ -174,17 +189,17 @@ test('throwing update releases runtime lock without writing state', async () => 
   await seed();
   const before = await bytes();
   const failure = new Error('callback sentinel');
-  await assert.rejects(withRuntimeState(async () => { throw failure; }), error => error === failure);
+  await assert.rejects(withTestRuntimeState(async () => { throw failure; }), error => error === failure);
   assert.deepEqual(await bytes(), before);
   await assert.rejects(fs.stat(RUNTIME_LOCK_FILE), { code: 'ENOENT' });
-  assert.equal(await withRuntimeState(async state => ({ state: { ...state, recovered: true }, result: 'released' })), 'released');
+  assert.equal(await withTestRuntimeState(async state => ({ state: { ...state, recovered: true }, result: 'released' })), 'released');
   assert.deepEqual((await read()).activeGeneration, generation());
 });
 
 test('repairing a dead update-lock owner does not clear activeGeneration', async () => {
   await seed();
   await fs.writeFile(RUNTIME_LOCK_FILE, JSON.stringify({ pid: deadPid, token: 'dead-update-owner', processStartIdentity: 'dead', startedAt: 1, operation: 'runtime-state' }), { encoding: 'utf8', mode: 0o600 });
-  await withRuntimeState(async state => ({ state: { ...state, repaired: true } }));
+  await withTestRuntimeState(async state => ({ state: { ...state, repaired: true } }));
   assert.deepEqual((await read()).activeGeneration, generation());
   assert.equal((await read()).repaired, true);
   await assert.rejects(fs.stat(RUNTIME_LOCK_FILE), { code: 'ENOENT' });
@@ -211,7 +226,7 @@ test('two real Node processes concurrently update different sessions without los
       const id = process.env.RECOVERY_SESSION;
       return { state: { ...state, sessions: { ...state.sessions,
         [id]: { ...state.sessions?.[id], sessionInitialized: true, marker: id } } } };
-    });
+    }, { verifyPaths: async () => {} });
     process.disconnect();
   `;
   const children = ['session-a', 'session-b'].map(id => {

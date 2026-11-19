@@ -26,13 +26,13 @@ async function fixture(t, provider) {
     settle: async () => {},
     send: async input => { sends++; return adapter.attempt(input); },
   };
-  const kernel = new TaskKernel([adapter], { directory });
+  const kernel = new TaskKernel([adapter], { directory, verifyStoragePaths: async () => {} });
   const input = { provider, request_id: 'send-outcome-one', prompt: 'synthetic private prompt' };
   return { kernel, adapter, page, input, directory, sends: () => sends };
 }
 
 async function assertReplay(f, task) {
-  const restarted = new TaskKernel([f.adapter], { directory: f.directory });
+  const restarted = new TaskKernel([f.adapter], { directory: f.directory, verifyStoragePaths: async () => {} });
   for (const kernel of [f.kernel, restarted]) {
     const replay = await kernel.send(f.input);
     assert.equal(replay.task_id, task.task_id);
@@ -125,7 +125,7 @@ for (const provider of ['chatgpt', 'gemini']) {
       throw new Error('connection lost after click');
     };
     const task = await f.kernel.send(f.input);
-    const restarted = new TaskKernel([f.adapter], { directory: f.directory });
+    const restarted = new TaskKernel([f.adapter], { directory: f.directory, verifyStoragePaths: async () => {} });
     for (const kernel of [f.kernel, restarted]) {
       await assert.rejects(kernel.send({ ...f.input, prompt: 'changed prompt' }), {
         code: 'IDEMPOTENCY_CONFLICT',

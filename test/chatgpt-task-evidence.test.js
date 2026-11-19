@@ -135,18 +135,37 @@ test('normal send acknowledgement must match callback ID and full prompt', async
   }
 });
 
-test('legacy nonterminal remains blocked without adopting current ID', async t => {
-  for (const operation of ['read', 'refresh', 'cancel', 'abandon']) {
+test('legacy nonterminal read, refresh and cancel remain blocked without adopting current ID', async t => {
+  for (const operation of ['read', 'refresh', 'cancel']) {
     const f = await fixture(t); const task = await f.kernel.send(f.input);
     await f.kernel.locked('chatgpt', async (state, save) => {
       delete state.tasks[task.task_id].messageIdentityVersion; delete state.tasks[task.task_id].targetUserMessageId; await save();
     });
     f.adapter.inspect = () => assert.fail('do not adopt the current ID');
-    const result = operation === 'abandon' ? await f.kernel.abandon(task.task_id, { confirm: true })
-      : await f.kernel.read(task.task_id, { cancel: operation === 'cancel', refresh: operation === 'refresh' });
+    const result = await f.kernel.read(task.task_id, { cancel: operation === 'cancel', refresh: operation === 'refresh' });
     assert.equal(result.state, 'uncertain'); assert.equal(result.error.code, 'LEGACY_IDENTITY_UNVERIFIED');
     assert.equal(result.blocking, true); assert.equal(f.controls.length, 0);
   }
+});
+
+test('legacy nonterminal abandon inspects the page but never adopts the visible current turn', async t => {
+  const f = await fixture(t); const task = await f.kernel.send(f.input);
+  await f.kernel.locked('chatgpt', async (state, save) => {
+    delete state.tasks[task.task_id].messageIdentityVersion;
+    delete state.tasks[task.task_id].targetUserMessageId;
+    await save();
+  });
+  Object.assign(f.page, { busy: false, complete: true, responseCount: 11, responseId: 'new-answer' });
+  let inspections = 0;
+  const inspect = f.adapter.inspect;
+  f.adapter.inspect = async (...args) => { inspections++; return inspect(...args); };
+  const result = await f.kernel.abandon(task.task_id, { confirm: true });
+  assert.equal(inspections, 1);
+  assert.equal(result.state, 'uncertain');
+  assert.equal(result.error.code, 'LEGACY_IDENTITY_UNVERIFIED');
+  assert.equal(result.blocking, true);
+  assert.equal(f.controls.length, 0);
+  assert.equal((await saved(f, task)).targetUserMessageId, undefined);
 });
 
 test('legacy completed cache remains unchanged even on refresh', async t => {

@@ -88,17 +88,24 @@ function taskAge(task, now) {
 export function journalStatistics(journal, { now = Date.now() } = {}) {
   const tasks = Object.values(journal.tasks);
   const active = tasks.filter(task => !terminal.has(task.state));
+  const uncertain = tasks.filter(task => task.state === 'uncertain');
   const state_counts = {};
   for (const task of tasks) state_counts[task.state] = (state_counts[task.state] || 0) + 1;
   const oldest = active.filter(task => Number.isFinite(task.created_at)).sort((a, b) => a.created_at - b.created_at)[0];
+  const oldestUncertain = uncertain.filter(task => Number.isFinite(task.updated_at ?? task.created_at))
+    .sort((a, b) => (a.updated_at ?? a.created_at) - (b.updated_at ?? b.created_at))[0];
   return {
     total_count: tasks.length, state_counts, active_count: active.length,
     blocking_count: tasks.filter(task => task.blocking === true).length,
     blocking_flag_mismatch_count: tasks.filter(task => task.blocking !== !terminal.has(task.state)).length,
     active_session_count: new Set(active.map(task => task.session_id || '')).size,
+    legacy_identity_unverified_count: uncertain.filter(task => task.provider === 'chatgpt' &&
+      (!task.targetUserMessageId || task.messageIdentityVersion !== 1)).length,
+    send_unconfirmed_count: uncertain.filter(task => ['SEND_UNCONFIRMED', 'LEGACY_IDENTITY_UNVERIFIED'].includes(task.error?.code)).length,
     oldest_active_task: oldest ? { state: oldest.state, created_at: oldest.created_at } : null,
     oldest_active_age_ms: oldest ? Math.max(0, now - oldest.created_at) : null,
     oldest_active_state: oldest?.state ?? null,
+    oldest_uncertain_age_ms: oldestUncertain ? Math.max(0, now - (oldestUncertain.updated_at ?? oldestUncertain.created_at)) : null,
   };
 }
 
@@ -484,36 +491,73 @@ export class TaskKernel {
         task.error = { code: 'PREFLIGHT_INTERRUPTED', message: 'Interrupted before sending. No automatic retry.' }; await save(); return taskView(task);
       }
       const adapter = this.adapter(id, task.session_id);
-      if (strictIdentity(adapter)) {
-        try { requireIdentityTarget(task); } catch (error) {
-          task.state = 'uncertain'; task.error = { code: error.code, message: error.message };
-          task.updated_at = Date.now(); await save(); return taskView(task);
-        }
-      }
+      const identityRequired = strictIdentity(adapter);
+      const hasTaskIdentity = identityRequired && task.messageIdentityVersion === 1 &&
+        typeof task.targetUserMessageId === 'string' && task.targetUserMessageId.trim().length > 0;
       try {
-      await adapter.browser.runExclusive(async () => {
-        const observed = await adapter.inspect({ allowPageError: true });
-        const saved = task.conversation_url;
-        const expected = saved && !adapter.isProvisional?.(saved) ? saved : task.baseline?.url;
-        if (!expected || canonicalURL(observed.url) !== canonicalURL(expected)) throw new WebUIError('CONVERSATION_CHANGED', 'Return to the original page before abandoning tracking.');
-        if (strictIdentity(adapter)) {
-          verifyTaskIdentity(task, observed, { adapter });
-        }
-        if (observed.busy) throw new WebUIError('GENERATING', 'Generation is active. Use chat_cancel for the verified task.');
-        const sent = strictIdentity(adapter) || (observed.userCount === task.baseline.userCount + 1 && matchesUserPrompt(task.promptHash, observed.lastUser, id === 'chatgpt' ? observed.identityCandidates : []));
-        const baseline = observed.userCount === task.baseline.userCount && observed.responseCount === task.baseline.responseCount &&
-          matchesUserPrompt(task.baseline.baselineHash, observed.lastUser);
-        if (!sent && !baseline) throw new WebUIError('TASK_IDENTITY_CHANGED', 'Neither the original sent turn nor the complete original baseline is confirmed; tracking was preserved.');
-        await adapter.settle({ ...controlIdentity(task, observed, adapter),
-          ...(sent ? {} : { baselineOnly: true, baselineHash: task.baseline.baselineHash, responseCount: task.baseline.responseCount }) }, { allowIdle: true });
-      }, { signal, name: 'chat_abandon' });
+        await adapter.browser.runExclusive(async () => {
+          const observed = await adapter.inspect({ allowPageError: true });
+          const saved = task.conversation_url;
+          const expectedURL = saved && !adapter.isProvisional?.(saved) ? saved : task.baseline?.url;
+          if (!expectedURL || canonicalURL(observed.url) !== canonicalURL(expectedURL)) {
+            throw new WebUIError('CONVERSATION_CHANGED', 'Return to the original page before abandoning tracking.');
+          }
+          if (hasTaskIdentity) verifyTaskIdentity(task, observed, { adapter });
+          if (observed.busy) throw new WebUIError('GENERATING', 'Generation is active. Use chat_cancel for the verified task.');
+
+          const active = observed.activeGeneration;
+          const sameDeadGeneration = identityRequired && !hasTaskIdentity && active?.active &&
+            active.managedTaskId === task.task_id && active.url === observed.url &&
+            observed.generationOwnerExited === true;
+          const baselineIdentitySafe = !identityRequired || (
+            observed.identitySnapshotValid === true &&
+            (task.baseline.userCount === 0 || (!!task.baseline.userMessageId && observed.userMessageId === task.baseline.userMessageId)) &&
+            (task.baseline.responseCount === 0 || (!!task.baseline.responseId && observed.responseId === task.baseline.responseId)) &&
+            (!active?.active || sameDeadGeneration)
+          );
+          const baseline = Number.isInteger(task.baseline?.userCount) &&
+            Number.isInteger(task.baseline?.responseCount) &&
+            typeof task.baseline?.baselineHash === 'string' &&
+            observed.userCount === task.baseline.userCount &&
+            observed.responseCount === task.baseline.responseCount &&
+            matchesUserPrompt(task.baseline.baselineHash, observed.lastUser || '', []) &&
+            baselineIdentitySafe;
+          const sent = identityRequired
+            ? hasTaskIdentity
+            : observed.userCount === task.baseline.userCount + 1 &&
+              matchesUserPrompt(task.promptHash, observed.lastUser, id === 'chatgpt' ? observed.identityCandidates : []);
+          if (!sent && !baseline) {
+            if (identityRequired && !hasTaskIdentity) {
+              throw new WebUIError('LEGACY_IDENTITY_UNVERIFIED', 'No stable task message ID was persisted and the original page no longer matches its exact baseline. Tracking remains reserved; do not resend.');
+            }
+            throw new WebUIError('TASK_IDENTITY_CHANGED', 'Neither the original sent turn nor the complete original baseline is confirmed; tracking was preserved.');
+          }
+
+          const expected = sent ? controlIdentity(task, observed, adapter) : {
+            url: observed.url,
+            userCount: observed.userCount,
+            promptHash: task.promptHash,
+            baselineOnly: true,
+            baselineHash: task.baseline.baselineHash,
+            responseCount: task.baseline.responseCount,
+            ...(identityRequired ? {
+              baselineUserMessageId: task.baseline.userMessageId || null,
+              baselineResponseId: task.baseline.responseId || null,
+              managedTaskId: task.task_id,
+            } : {}),
+          };
+          await adapter.settle(expected, { allowIdle: true });
+        }, { signal, name: 'chat_abandon' });
       } catch (error) {
-        if (!strictIdentity(adapter)) throw error;
-        task.state = 'uncertain'; task.error = { code: error.code || 'PROVIDER_ERROR', message: error.message.split('\n')[0] };
-        task.updated_at = Date.now(); await save(); return taskView(task);
+        if (!identityRequired) throw error;
+        task.state = 'uncertain';
+        task.error = { code: error.code || 'PROVIDER_ERROR', message: error.message.split('\n')[0] };
+        task.updated_at = Date.now();
+        await save();
+        return taskView(task);
       }
       task.state = 'abandoned'; task.blocking = false; task.updated_at = Date.now();
-      task.error = { code: 'TRACKING_ABANDONED', message: 'Tracking explicitly abandoned. Delivery and completion are not asserted; the request_id remains reserved.' };
+      task.error = { code: 'TRACKING_ABANDONED', message: 'Tracking explicitly abandoned after page identity verification. This does not undo delivery or assert completion; the request_id remains reserved.' };
       releaseTask(state, task); await save(); return taskView(task);
     }, signal);
   }

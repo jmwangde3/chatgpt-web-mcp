@@ -18,7 +18,7 @@ async function fixture(t) {
   t.after(async () => { assert.equal(path.dirname(directory), root); await fs.rm(directory, { recursive: true, force: true }); });
   const localConfig = { executable: process.execPath, runtimeState: path.join(directory, 'runtime.json'), browserState: path.join(directory, 'browser.json') };
   const provider = { id: 'gemini', capabilities: {}, localConfig, browser: { runExclusive: () => assert.fail('must not access browser') } };
-  return { directory, localConfig, kernel: new TaskKernel([provider], { directory: path.join(directory, 'tasks') }) };
+  return { directory, localConfig, kernel: new TaskKernel([provider], { directory: path.join(directory, 'tasks'), verifyStoragePaths: async () => {} }) };
 }
 test('doctor reads local state without browser or filesystem mutation and redacts private data', async (t) => {
   const f = await fixture(t);
@@ -86,6 +86,16 @@ test('recovery gives specific non-retry guidance for uncertain outcomes', () => 
     const recovery = recoveryFor({ state: 'uncertain', error: { code } });
     assert.equal(recovery.action, action); assert.equal(recovery.automatic_retry, false);
   }
+  const chatgptLegacy = recoveryFor({ provider: 'chatgpt', state: 'uncertain', error: { code: 'LEGACY_IDENTITY_UNVERIFIED' } });
+  const chatgptUnconfirmed = recoveryFor({ provider: 'chatgpt', state: 'uncertain', error: { code: 'SEND_UNCONFIRMED' } });
+  const geminiUnconfirmed = recoveryFor({ provider: 'gemini', state: 'uncertain', error: { code: 'SEND_UNCONFIRMED' } });
+  const geminiLegacy = recoveryFor({ provider: 'gemini', state: 'uncertain', error: { code: 'LEGACY_IDENTITY_UNVERIFIED' } });
+  assert.equal(chatgptLegacy.action, 'inspect_then_baseline_abandon_or_recover');
+  assert.equal(chatgptUnconfirmed.action, 'inspect_then_baseline_abandon_or_recover');
+  assert.equal(geminiUnconfirmed.action, 'inspect_page');
+  assert.equal(geminiLegacy.action, 'inspect_page');
+  const chatgptIdentified = recoveryFor({ provider: 'chatgpt', targetUserMessageId: 'user-id', state: 'uncertain', error: { code: 'SEND_UNCONFIRMED' } });
+  assert.equal(chatgptIdentified.action, 'inspect_page');
 });
 test('journal rejects primitive roots and active terminal records', () => {
   for (const raw of [null, [], 1, 'x', { version: 1, tasks: { x: { task_id: 'x', provider: 'gemini', state: 'completed' } }, active: 'x' }]) assert.throws(() => validateJournal(raw, 'gemini'), { code: 'INVALID_JOURNAL' });

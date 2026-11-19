@@ -28,6 +28,7 @@ async function fixture(t, { legacy = false } = {}) {
   context.pages = () => [];
   context.setDefaultTimeout = () => {};
   const browser = new EventEmitter();
+  browser._shouldCloseConnectionOnClose = false;
   let connected = true;
   browser.contexts = () => [context];
   browser.isConnected = () => connected;
@@ -36,7 +37,7 @@ async function fixture(t, { legacy = false } = {}) {
     assert.equal(command, 'Browser.close');
     await f.onClose();
   } });
-  browser.close = async () => { calls.disconnects++; connected = false; browser.emit('disconnected'); };
+  browser.close = async () => { assert.equal(browser._shouldCloseConnectionOnClose, false); calls.disconnects++; connected = false; browser.emit('disconnected'); };
   f.runtime = new AgentPersistentBrowser(config, {
     security: {
       paths: async value => assert.deepEqual(value, {

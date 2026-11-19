@@ -17,6 +17,9 @@ async function connect() {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [fileURLToPath(new URL('../src/index.js', import.meta.url))],
+    env: Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+      key === 'R345_TEST_ROOT' || /^(WEB_CHAT_|CHATGPT_WEB_|GEMINI_WEB_)/.test(key),
+    )),
     stderr: 'pipe',
   });
   transport.stderr?.on('data', chunk => process.stderr.write(chunk));
@@ -44,6 +47,7 @@ try {
       request_id,
       prompt: `Integration test only. Reply with this exact marker and nothing else: ${marker}`,
     };
+    console.log(JSON.stringify({ synthetic_request: input }));
     const submitted = await call('chat_send', input);
     assert.equal(submitted.state, 'submitted', JSON.stringify(submitted.error));
     console.log(`Submitted ${submitted.task_id}; reconnecting MCP before reading.`);

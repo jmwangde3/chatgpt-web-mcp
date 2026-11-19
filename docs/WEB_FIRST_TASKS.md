@@ -108,3 +108,12 @@ Smoke 必须通过真实 MCP `tools/list` 确认恰好四个工具，并核对 `
 发送返回 `fanout:` 父任务 ID 和两个独立子任务。对父 ID 调用 `chat_result` 并行读取，各子项可部分失败，单次共用同一观察预算。父任务读取永不发送；`queued` 子项只在用完全相同的原请求与 ID 调用 `chat_send` 时补齐。已有子项不会重发。取消、刷新或指定会话 URL 时使用子任务 ID。
 
 Gemini 在预检发现发送保护未安装时，只会在确认编辑器为空且没有附件、上传或挂起生成后刷新原标签一次。发现未知页面、已有草稿或刷新后身份变化时停止，不重发。
+
+
+## 2026-11-19 recovery hardening
+
+- A Playwright CDP disconnect now detaches only the local control transport; it must not close the remote Chrome browser. The browser/profile remains the MCP-owned dedicated instance across MCP process reconnects.
+- `LEGACY_IDENTITY_UNVERIFIED` means a stable per-message ID was not persisted. Do not invent an identity or resend. Explicit `abandon --confirm` can release only when the original URL, baseline counts/hash/IDs and idle state are reverified. If a same-task generation owner record remains, it is cleared only when that owner is confirmed exited and the page remains at the exact baseline.
+- `doctor --repair` reclaims only DEAD/PID_REUSED lock owners. It never edits the task journal, releases uncertain tasks or archives history. LIVE/UNKNOWN locks remain untouched.
+- The MCP progress notification's 30-second rate limiter is not an Agent polling interval. The Skill keeps the 90-second slice pending real host transport measurements. For new personal Codex long-wait work, prefer `web-first-ask` + ask-bridge CLI.
+- The existing two-provider ChatGPT + Gemini fan-out remains unchanged.

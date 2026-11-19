@@ -7,6 +7,8 @@ import { GeminiBrowser, conversationURL, isRateLimit, isResponseFailure } from "
 import { geminiConfig } from "../src/gemini/config.js";
 import { acquireLock, readState, writeState } from "../src/shared/persistent-browser.js";
 
+const verifyStoragePaths = async () => {};
+
 async function fixture(t) {
   const root = path.resolve(os.tmpdir());
   const directory = await fs.mkdtemp(path.join(root, "gemini-unit-"));
@@ -16,7 +18,7 @@ async function fixture(t) {
   });
   const config = geminiConfig({ GEMINI_WEB_DATA_DIR: directory });
   const runtime = { disconnect: async () => {}, connect: async () => assert.fail("offline test must not open the browser") };
-  return new GeminiBrowser(config, runtime);
+  return new GeminiBrowser(config, runtime, { verifyStoragePaths });
 }
 
 test('Gemini recognizes the observed service error without matching quoted explanations', () => {
@@ -90,7 +92,7 @@ test("runExclusive releases the lock on failure and serializes local callers", a
 test("pending sends block new sends and survive a new controller instance", async (t) => {
   const b = await fixture(t);
   await b.update({ pending: { startedAt: Date.now() } });
-  const next = new GeminiBrowser(b.config, b.runtime);
+  const next = new GeminiBrowser(b.config, b.runtime, { verifyStoragePaths });
   await assert.rejects(next.check(), (e) => e.code === "PENDING_RESPONSE");
   await assert.rejects(next.sendMessage({ prompt: "do not send" }), (e) => e.code === "PENDING_RESPONSE");
 });

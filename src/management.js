@@ -1,10 +1,10 @@
 import { parseArgs } from 'node:util';
-import { diagnose } from './core/diagnostics.js';
+import { diagnose, repairStaleLocks } from './core/diagnostics.js';
 
 export const managementCommands = ['providers', 'doctor', 'tasks', 'result', 'cancel', 'abandon'];
 export function parseManagement(command, args) {
   const schemas = {
-    providers: {}, doctor: { provider: { type: 'string', default: 'all' } },
+    providers: {}, doctor: { provider: { type: 'string', default: 'all' }, repair: { type: 'boolean', default: false } },
     tasks: { provider: { type: 'string', default: 'all' }, limit: { type: 'string', default: '20' }, offset: { type: 'string', default: '0' }, state: { type: 'string' } },
     result: { wait: { type: 'boolean', default: false }, timeout: { type: 'string', default: '30000' } },
     cancel: {}, abandon: { confirm: { type: 'boolean', default: false } },
@@ -31,7 +31,11 @@ export async function executeManagement(kernel, input, signal) {
   const { command, task_id } = input;
   const ids = input.provider && input.provider !== 'all' ? [input.provider] : [...kernel.providers.keys()];
   if (command === 'providers') return { providers: [...kernel.providers.values()].map(({ id, capabilities }) => ({ id, capabilities })) };
-  if (command === 'doctor') return diagnose(kernel, ids);
+  if (command === 'doctor') {
+    const lock_repair = input.repair ? await repairStaleLocks(kernel, ids) : null;
+    const report = await diagnose(kernel, ids);
+    return lock_repair ? { ...report, ok: report.ok && lock_repair.ok, lock_repair } : report;
+  }
   if (command === 'tasks') return { providers: await Promise.all(ids.map((id) => kernel.list(id, input.limit, input))) };
   if (command === 'result') return kernel.result(task_id, { wait: input.wait, timeoutMs: input.timeout, signal });
   if (command === 'cancel') return kernel.read(task_id, { cancel: true, signal });
