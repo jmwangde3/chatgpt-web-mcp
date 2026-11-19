@@ -39,3 +39,4 @@
 - Add a guard against the distinct `connect()` transport-close mode.
 - Make the real Chrome/CDP verifier log the disconnect event and avoid issuing duplicate concurrent detach attempts after a timeout.
 - Pass explicit browser and task isolation settings to the real MCP verifier on both initial connection and reconnect. Record the synthetic request before submission so any recovery can reuse the same identity.
+- Continue waiting through Google sign-in in the Gemini login command, including when it uses a tab in the shared Chrome window.

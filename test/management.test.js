@@ -10,6 +10,7 @@ import { TaskKernel, validateJournal } from '../src/core/tasks.js';
 import { diagnose } from '../src/core/diagnostics.js';
 import { recoveryFor } from '../src/core/recovery.js';
 import { parseManagement, executeManagement } from '../src/management.js';
+import { loginProviders } from '../src/lifecycle.js';
 import { writeState } from '../src/shared/persistent-browser.js';
 
 async function fixture(t) {
@@ -108,4 +109,23 @@ test('CLI process lists providers and exits 2 on malformed arguments without cre
   assert.deepEqual(JSON.parse(result.stdout).providers.map((p) => p.id), ['chatgpt', 'gemini']);
   await assert.rejects(exec(process.execPath, [cli, 'tasks', '--limit', '0'], { env }), (e) => e.code === 2 && e.stderr.includes('INVALID_ARGUMENTS'));
   assert.deepEqual(await fs.readdir(f.directory), []);
+});
+
+test('Gemini login keeps waiting while the Google sign-in page is open', async () => {
+  let checks = 0;
+  const browser = {
+    async page() {
+      checks++;
+      if (checks === 1) throw Object.assign(new Error('Google sign-in in progress'), { code: 'LOGIN_REQUIRED' });
+    },
+    async snapshot() { return { signedIn: true }; },
+  };
+  const kernel = {
+    provider: () => ({ browser }),
+    run: async (_provider, action) => action(),
+  };
+  assert.deepEqual(await loginProviders(kernel, { provider: 'gemini', timeout: 50 }), {
+    providers: [{ provider: 'gemini', signed_in: true }],
+  });
+  assert.equal(checks, 2);
 });
